@@ -44,7 +44,7 @@ export default function RootLayout({
           {/* ナビゲーション */}
           <nav className="flex gap-6 text-gray-600 font-medium tracking-wide">
             <Link href="/" className="hover:text-blue-600 transition">
-              ホーム2
+              ホーム
             </Link>
             <Link href="/features" className="hover:text-blue-600 transition">
               機能

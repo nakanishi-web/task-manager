@@ -364,7 +364,7 @@ const toggleDone = (id: string) => {
 
             {/* 期限表示（色付き＋日本語フォーマット） */}
             <span className={`text-sm ml-7 ${getDeadlineColor(task.deadline)}`}>
-              期限!!!：{formatDate(task.deadline)}
+              期限：{formatDate(task.deadline)}
             </span>
           </li>
         ))}
