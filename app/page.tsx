@@ -6,6 +6,8 @@ type Task = {
   text: string;
   done: boolean;
   deadline: string;
+  project: string;
+  tags: string[];
 };
 
 type WarningBanner = {
@@ -17,10 +19,23 @@ export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [newTask, setNewTask] = useState("");
   const [deadline, setDeadline] = useState("");
+  const [project, setProject] = useState("");
+  const [newTags, setNewTags] = useState("");
+  const [selectedProject, setSelectedProject] = useState("all");
+  const [selectedTag, setSelectedTag] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "done">("all");
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTaskText, setEditingTaskText] = useState("");
   const [editingDeadline, setEditingDeadline] = useState("");
+  const [editingProject, setEditingProject] = useState("");
+  const [editingTags, setEditingTags] = useState("");
   const [warningBanner, setWarningBanner] = useState<WarningBanner>({ show: false, tasks: [] });
+
+  const parseTags = (tagsText: string) =>
+    tagsText
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
 
   // 期限が近いタスクをチェックする関数
   const checkUpcomingDeadlines = (taskList: Task[]) => {
@@ -48,7 +63,11 @@ export default function Home() {
   useEffect(() => {
     const saved = localStorage.getItem("tasks");
     if (saved) {
-      const loadedTasks = JSON.parse(saved);
+      const loadedTasks = JSON.parse(saved).map((task: any) => ({
+        ...task,
+        project: task.project || "未分類",
+        tags: Array.isArray(task.tags) ? task.tags : [],
+      }));
       setTasks(loadedTasks);
       
       // 期限が近いタスクをチェック
@@ -73,6 +92,8 @@ export default function Home() {
       text: newTask,
       done: false,
       deadline: deadline || "未設定",
+      project: project.trim() || "未分類",
+      tags: parseTags(newTags),
     };
 
     const updatedTasks = [...tasks, newItem];
@@ -81,6 +102,8 @@ export default function Home() {
     // 入力欄リセット
     setNewTask("");
     setDeadline("");
+    setProject("");
+    setNewTags("");
 
     // 期限が近いタスクをチェック
     const upcomingTasks = checkUpcomingDeadlines(updatedTasks);
@@ -115,12 +138,16 @@ export default function Home() {
     setEditingTaskId(task.id);
     setEditingTaskText(task.text);
     setEditingDeadline(task.deadline === "未設定" ? "" : task.deadline);
+    setEditingProject(task.project || "");
+    setEditingTags(task.tags.join(", "));
   };
 
   const cancelEditing = () => {
     setEditingTaskId(null);
     setEditingTaskText("");
     setEditingDeadline("");
+    setEditingProject("");
+    setEditingTags("");
   };
 
   const saveTaskEdit = () => {
@@ -132,6 +159,8 @@ export default function Home() {
             ...task,
             text: editingTaskText.trim() || task.text,
             deadline: editingDeadline || "未設定",
+            project: editingProject.trim() || "未分類",
+            tags: parseTags(editingTags),
           }
         : task
     );
@@ -203,6 +232,23 @@ const toggleDone = (id: string) => {
     return dateA - dateB;
   });
 
+  const filteredTasks = sortedTasks.filter((task) => {
+    const projectMatch = selectedProject === "all" || task.project === selectedProject;
+    const statusMatch =
+      statusFilter === "all" ||
+      (statusFilter === "active" && !task.done) ||
+      (statusFilter === "done" && task.done);
+    const tagMatch = selectedTag === "all" || task.tags.includes(selectedTag);
+    return projectMatch && statusMatch && tagMatch;
+  });
+
+  const groupedTasks = filteredTasks.reduce<Record<string, Task[]>>((groups, task) => {
+    const key = task.project || "未分類";
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(task);
+    return groups;
+  }, {});
+
   return (
     <>
       {/* 警告バナー */}
@@ -254,18 +300,37 @@ const toggleDone = (id: string) => {
       </p>
 
       {/* 入力フォーム */}
-      <div className="flex items-center gap-3 mb-8 flex-wrap">
-        {/* タスク名入力欄 */}
-        <input
-          type="text"
-          value={newTask}
-          onChange={(e) => setNewTask(e.target.value)}
-          placeholder="新しいタスクを入力"
-          className="h-10 border rounded-xl px-3 w-72 shadow-sm font-medium tracking-wide"
-        />
+      <div className="mx-auto w-full max-w-4xl">
+        <div className="mb-8 grid gap-3 md:grid-cols-[1.8fr_1fr_1fr_1fr_auto]">
+        <div className="flex flex-col gap-1 min-w-[16rem]">
+          <label htmlFor="task" className="text-gray-600 text-sm font-medium">
+            タスク
+          </label>
+          <input
+            id="task"
+            type="text"
+            value={newTask}
+            onChange={(e) => setNewTask(e.target.value)}
+            placeholder="新しいタスクを入力"
+            className="h-10 border rounded-xl px-3 shadow-sm font-medium tracking-wide"
+          />
+        </div>
 
-        {/* 期限入力欄 */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-1 min-w-[12rem]">
+          <label htmlFor="project" className="text-gray-600 text-sm font-medium">
+            案件
+          </label>
+          <input
+            id="project"
+            type="text"
+            value={project}
+            onChange={(e) => setProject(e.target.value)}
+            placeholder="案件名を入力"
+            className="h-10 border rounded-xl px-3 shadow-sm font-medium tracking-wide"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1 min-w-[12rem]">
           <label htmlFor="deadline" className="text-gray-600 text-sm font-medium">
             期限
           </label>
@@ -278,13 +343,89 @@ const toggleDone = (id: string) => {
           />
         </div>
 
-        {/* 追加ボタン */}
-        <button
-          onClick={addTask}
-          className="h-10 bg-blue-500 text-white px-5 rounded-xl shadow-md hover:bg-blue-600 font-medium tracking-wide"
-        >
-          追加
-        </button>
+        <div className="flex flex-col gap-1 min-w-[14rem]">
+          <label htmlFor="tags" className="text-gray-600 text-sm font-medium">
+            タグ
+          </label>
+          <input
+            id="tags"
+            type="text"
+            value={newTags}
+            onChange={(e) => setNewTags(e.target.value)}
+            placeholder="例: 重要, 納品"
+            className="h-10 border rounded-xl px-3 shadow-sm font-medium tracking-wide"
+          />
+        </div>
+
+        <div className="flex items-end">
+          <button
+            onClick={addTask}
+            className="h-10 bg-blue-500 text-white px-5 rounded-xl shadow-md hover:bg-blue-600 font-medium tracking-wide w-full"
+          >
+            追加
+          </button>
+        </div>
+      </div>
+
+      <div className="mb-6 space-y-4">
+        <div className="grid grid-cols-[6rem_1fr] items-center gap-3">
+          <span className="text-sm text-gray-600">表示案件:</span>
+          <div className="flex flex-wrap gap-3 items-center">
+            <button
+              onClick={() => setSelectedProject("all")}
+              className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${selectedProject === "all" ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
+            >
+              すべて
+            </button>
+            {[...new Set(tasks.map((task) => task.project || "未分類"))].map((projectName) => (
+              <button
+                key={projectName}
+                onClick={() => setSelectedProject(projectName)}
+                className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${selectedProject === projectName ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
+              >
+                {projectName}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-[6rem_1fr] items-center gap-3">
+          <span className="text-sm text-gray-600">状態:</span>
+          <div className="flex flex-wrap gap-3 items-center">
+            {(["all", "active", "done"] as const).map((status) => (
+              <button
+                key={status}
+                onClick={() => setStatusFilter(status)}
+                className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${statusFilter === status ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
+              >
+                {status === "all" ? "すべて" : status === "active" ? "未完了" : "完了"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-[6rem_1fr] items-center gap-3">
+          <span className="text-sm text-gray-600">表示タグ:</span>
+          <div className="flex flex-wrap gap-3 items-center">
+            <button
+              onClick={() => setSelectedTag("all")}
+              className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${selectedTag === "all" ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
+            >
+              すべて
+            </button>
+            {[...new Set(tasks.flatMap((task) => task.tags))].map((tagName) => (
+              <button
+                key={tagName}
+                onClick={() => setSelectedTag(tagName)}
+                className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${selectedTag === tagName ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
+              >
+                {tagName}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
       </div>
 
       {editingTaskId && (
@@ -297,6 +438,32 @@ const toggleDone = (id: string) => {
               onChange={(e) => setEditingTaskText(e.target.value)}
               className="h-10 border rounded-xl px-3 w-72 shadow-sm font-medium tracking-wide"
             />
+            <div className="flex items-center gap-2">
+              <label htmlFor="edit-project" className="text-gray-600 text-sm font-medium">
+                案件
+              </label>
+              <input
+                id="edit-project"
+                type="text"
+                value={editingProject}
+                onChange={(e) => setEditingProject(e.target.value)}
+                placeholder="案件名を入力"
+                className="h-10 border rounded-xl px-3 shadow-sm font-medium tracking-wide"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label htmlFor="edit-tags" className="text-gray-600 text-sm font-medium">
+                タグ
+              </label>
+              <input
+                id="edit-tags"
+                type="text"
+                value={editingTags}
+                onChange={(e) => setEditingTags(e.target.value)}
+                placeholder="例: 重要, 納品"
+                className="h-10 border rounded-xl px-3 shadow-sm font-medium tracking-wide"
+              />
+            </div>
             <div className="flex items-center gap-2">
               <label htmlFor="edit-deadline" className="text-gray-600 text-sm font-medium">
                 期限
@@ -326,49 +493,72 @@ const toggleDone = (id: string) => {
       )}
 
       {/* タスク一覧 */}
-      <ul className="bg-gradient-to-br from-white to-blue-50 shadow-lg rounded-xl p-6 w-full max-w-md">
-        {sortedTasks.map((task) => (
-          <li
-            key={task.id}
-            className={`border-b py-3 flex flex-col gap-1 cursor-pointer rounded-lg p-2 ${
-              task.done ? "bg-gray-100" : "bg-white"
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                checked={task.done}
-                onChange={() => toggleDone(task.id)}
-                className="cursor-pointer"
-              />
-              <span
-                className={`font-medium tracking-wide flex-1 ${
-                  task.done ? "line-through text-gray-400" : "text-gray-700"
-                }`}
-              >
-                {task.text}
-              </span>
-              <button
-                onClick={() => startEditingTask(task)}
-                className="text-blue-500 hover:text-blue-600 font-bold"
-              >
-                編集
-              </button>
-              <button
-                onClick={() => removeTask(task.id)}
-                className="text-red-500 hover:text-red-600 font-bold"
-              >
-                ×
-              </button>
+      {filteredTasks.length === 0 ? (
+        <div className="mb-8 mx-auto w-full max-w-4xl rounded-xl border border-dashed border-gray-300 bg-white p-8 text-center text-gray-600">
+          条件に一致するタスクがありません。
+        </div>
+      ) : (
+        Object.entries(groupedTasks).map(([projectName, projectTasks]) => (
+          <div key={projectName} className="mb-8 mx-auto w-full max-w-4xl">
+            <div className="mb-4 px-4 py-2 rounded-xl bg-blue-100 text-blue-800 font-semibold shadow-sm">
+              {projectName} ({projectTasks.length}件)
             </div>
+            <ul className="bg-gradient-to-br from-white to-blue-50 shadow-lg rounded-xl p-6 w-full">
+              {projectTasks.map((task) => (
+                <li
+                  key={task.id}
+                  className={`border-b py-3 flex flex-col gap-1 cursor-pointer rounded-lg p-2 ${
+                    task.done ? "bg-gray-100" : "bg-white"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={task.done}
+                      onChange={() => toggleDone(task.id)}
+                      className="cursor-pointer"
+                    />
+                    <span
+                      className={`font-medium tracking-wide flex-1 ${
+                        task.done ? "line-through text-gray-400" : "text-gray-700"
+                      }`}
+                    >
+                      {task.text}
+                    </span>
+                    <button
+                      onClick={() => startEditingTask(task)}
+                      className="text-blue-500 hover:text-blue-600 font-bold"
+                    >
+                      編集
+                    </button>
+                    <button
+                      onClick={() => removeTask(task.id)}
+                      className="text-red-500 hover:text-red-600 font-bold"
+                    >
+                      ×
+                    </button>
+                  </div>
 
-            {/* 期限表示（色付き＋日本語フォーマット） */}
-            <span className={`text-sm ml-7 ${getDeadlineColor(task.deadline)}`}>
-              期限：{formatDate(task.deadline)}
-            </span>
-          </li>
-        ))}
-      </ul>
+                  <div className="ml-7 flex flex-wrap gap-2 items-center text-sm text-gray-600">
+                    <span className={getDeadlineColor(task.deadline)}>
+                      期限：{formatDate(task.deadline)}
+                    </span>
+                    {task.tags.length > 0 && (
+                      <span className="flex flex-wrap gap-2">
+                        {task.tags.map((tag) => (
+                          <span key={tag} className="inline-block bg-gray-200 text-gray-700 px-2 py-1 rounded-full text-xs">
+                            #{tag}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      )}
     </>
   );
 }
