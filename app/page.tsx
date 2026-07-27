@@ -30,6 +30,7 @@ export default function Home() {
   const [editingProject, setEditingProject] = useState("");
   const [editingTags, setEditingTags] = useState("");
   const [warningBanner, setWarningBanner] = useState<WarningBanner>({ show: false, tasks: [] });
+  const [isHydrated, setIsHydrated] = useState(false);
 
   const parseTags = (tagsText: string) =>
     tagsText
@@ -37,17 +38,30 @@ export default function Home() {
       .map((tag) => tag.trim())
       .filter(Boolean);
 
+  const clearFilters = () => {
+    setSelectedProject("all");
+    setSelectedTag("all");
+    setStatusFilter("all");
+  };
+
+  const parseDateAsUtcMidnight = (dateString: string) => {
+    const [year, month, day] = dateString.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+  };
+
+  const getUtcMidnightToday = () => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  };
+
   // 期限が近いタスクをチェックする関数
   const checkUpcomingDeadlines = (taskList: Task[]) => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = getUtcMidnightToday();
 
     const upcomingTasks = taskList.filter((task) => {
       if (task.deadline === "未設定" || task.done) return false;
-      
-      const taskDate = new Date(task.deadline);
-      taskDate.setHours(0, 0, 0, 0);
-      
+
+      const taskDate = parseDateAsUtcMidnight(task.deadline);
       const diffDays = Math.floor(
         (taskDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
       );
@@ -69,19 +83,21 @@ export default function Home() {
         tags: Array.isArray(task.tags) ? task.tags : [],
       }));
       setTasks(loadedTasks);
-      
+
       // 期限が近いタスクをチェック
       const upcomingTasks = checkUpcomingDeadlines(loadedTasks);
       if (upcomingTasks.length > 0) {
         setWarningBanner({ show: true, tasks: upcomingTasks });
       }
     }
+    setIsHydrated(true);
   }, []);
 
   // タスクが変わるたびにローカルストレージへ保存
   useEffect(() => {
+    if (!isHydrated) return;
     localStorage.setItem("tasks", JSON.stringify(tasks));
-  }, [tasks]);
+  }, [tasks, isHydrated]);
 
   // タスク追加
   const addTask = () => {
@@ -98,6 +114,7 @@ export default function Home() {
 
     const updatedTasks = [...tasks, newItem];
     setTasks(updatedTasks);
+    localStorage.setItem("tasks", JSON.stringify(updatedTasks));
 
     // 入力欄リセット
     setNewTask("");
@@ -166,6 +183,7 @@ export default function Home() {
     );
 
     setTasks(updatedTasks);
+    localStorage.setItem("tasks", JSON.stringify(updatedTasks));
     const upcomingTasks = checkUpcomingDeadlines(updatedTasks);
     setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
     cancelEditing();
@@ -175,6 +193,7 @@ export default function Home() {
 const removeTask = (id: string) => {
   const updatedTasks = tasks.filter(task => task.id !== id);
   setTasks(updatedTasks);
+  localStorage.setItem("tasks", JSON.stringify(updatedTasks));
   
   // 期限が近いタスク一覧を更新
   const upcomingTasks = checkUpcomingDeadlines(updatedTasks);
@@ -191,6 +210,7 @@ const toggleDone = (id: string) => {
     task.id === id ? { ...task, done: !task.done } : task
   );
   setTasks(updatedTasks);
+  localStorage.setItem("tasks", JSON.stringify(updatedTasks));
   
   // 期限が近いタスク一覧を更新
   const upcomingTasks = checkUpcomingDeadlines(updatedTasks);
@@ -211,8 +231,8 @@ const toggleDone = (id: string) => {
   // 🔹期限が近いタスクを色で強調
   const getDeadlineColor = (deadline: string) => {
     if (deadline === "未設定") return "text-gray-500";
-    const today = new Date();
-    const taskDate = new Date(deadline);
+    const today = getUtcMidnightToday();
+    const taskDate = parseDateAsUtcMidnight(deadline);
     const diffDays = Math.floor(
       (taskDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
     );
@@ -301,7 +321,7 @@ const toggleDone = (id: string) => {
 
       {/* 入力フォーム */}
       <div className="mx-auto w-full max-w-4xl">
-        <div className="mb-8 grid gap-3 md:grid-cols-[1.8fr_1fr_1fr_1fr_auto]">
+        <div className="mb-8 grid gap-3 items-end md:grid-cols-[1.8fr_1fr_1fr_1fr_auto]">
         <div className="flex flex-col gap-1 min-w-[16rem]">
           <label htmlFor="task" className="text-gray-600 text-sm font-medium">
             タスク
@@ -357,10 +377,10 @@ const toggleDone = (id: string) => {
           />
         </div>
 
-        <div className="flex items-end">
+        <div className="flex items-end min-w-[5rem]">
           <button
             onClick={addTask}
-            className="h-10 bg-blue-500 text-white px-5 rounded-xl shadow-md hover:bg-blue-600 font-medium tracking-wide w-full"
+            className="h-10 bg-blue-500 text-white px-5 rounded-xl shadow-md hover:bg-blue-600 font-medium tracking-wide w-full whitespace-nowrap"
           >
             追加
           </button>
@@ -424,6 +444,15 @@ const toggleDone = (id: string) => {
             ))}
           </div>
         </div>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={clearFilters}
+            className="h-9 px-4 rounded-full border bg-white text-gray-700 hover:bg-gray-100"
+          >
+            フィルタ解除
+          </button>
+        </div>
       </div>
 
       </div>
@@ -431,14 +460,15 @@ const toggleDone = (id: string) => {
       {editingTaskId && (
         <div className="mb-6 p-4 border rounded-xl bg-yellow-50 shadow-sm">
           <h2 className="font-semibold text-lg text-yellow-800 mb-3">タスクを編集</h2>
-          <div className="flex flex-wrap gap-3 items-end">
+          <div className="grid gap-3 items-end grid-cols-1 md:grid-cols-[1.4fr_1fr_1fr_1fr_auto]">
             <input
               type="text"
               value={editingTaskText}
               onChange={(e) => setEditingTaskText(e.target.value)}
-              className="h-10 border rounded-xl px-3 w-72 shadow-sm font-medium tracking-wide"
+              className="h-10 border rounded-xl px-3 w-full shadow-sm font-medium tracking-wide"
+              placeholder="タスク内容を編集"
             />
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-1 min-w-[12rem]">
               <label htmlFor="edit-project" className="text-gray-600 text-sm font-medium">
                 案件
               </label>
@@ -451,7 +481,7 @@ const toggleDone = (id: string) => {
                 className="h-10 border rounded-xl px-3 shadow-sm font-medium tracking-wide"
               />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-1 min-w-[12rem]">
               <label htmlFor="edit-tags" className="text-gray-600 text-sm font-medium">
                 タグ
               </label>
@@ -464,7 +494,7 @@ const toggleDone = (id: string) => {
                 className="h-10 border rounded-xl px-3 shadow-sm font-medium tracking-wide"
               />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-1 min-w-[12rem]">
               <label htmlFor="edit-deadline" className="text-gray-600 text-sm font-medium">
                 期限
               </label>
@@ -476,18 +506,20 @@ const toggleDone = (id: string) => {
                 className="h-10 border rounded-xl px-3 shadow-sm font-medium tracking-wide"
               />
             </div>
-            <button
-              onClick={saveTaskEdit}
-              className="h-10 bg-green-500 text-white px-5 rounded-xl shadow-md hover:bg-green-600 font-medium tracking-wide"
-            >
-              保存
-            </button>
-            <button
-              onClick={cancelEditing}
-              className="h-10 bg-gray-200 text-gray-700 px-5 rounded-xl shadow-sm hover:bg-gray-300 font-medium tracking-wide"
-            >
-              キャンセル
-            </button>
+            <div className="flex flex-wrap justify-end gap-2 min-w-[10rem]">
+              <button
+                onClick={saveTaskEdit}
+                className="h-10 bg-green-500 text-white px-5 rounded-xl shadow-md hover:bg-green-600 font-medium tracking-wide"
+              >
+                保存
+              </button>
+              <button
+                onClick={cancelEditing}
+                className="h-10 bg-gray-200 text-gray-700 px-5 rounded-xl shadow-sm hover:bg-gray-300 font-medium tracking-wide"
+              >
+                キャンセル
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -500,9 +532,13 @@ const toggleDone = (id: string) => {
       ) : (
         Object.entries(groupedTasks).map(([projectName, projectTasks]) => (
           <div key={projectName} className="mb-8 mx-auto w-full max-w-4xl">
-            <div className="mb-4 px-4 py-2 rounded-xl bg-blue-100 text-blue-800 font-semibold shadow-sm">
+            <button
+              type="button"
+              onClick={() => setSelectedProject(projectName)}
+              className="mb-4 w-full text-left px-4 py-2 rounded-xl bg-blue-100 text-blue-800 font-semibold shadow-sm hover:bg-blue-200"
+            >
               {projectName} ({projectTasks.length}件)
-            </div>
+            </button>
             <ul className="bg-gradient-to-br from-white to-blue-50 shadow-lg rounded-xl p-6 w-full">
               {projectTasks.map((task) => (
                 <li
@@ -546,9 +582,14 @@ const toggleDone = (id: string) => {
                     {task.tags.length > 0 && (
                       <span className="flex flex-wrap gap-2">
                         {task.tags.map((tag) => (
-                          <span key={tag} className="inline-block bg-gray-200 text-gray-700 px-2 py-1 rounded-full text-xs">
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() => setSelectedTag(tag)}
+                            className="inline-flex items-center bg-gray-200 text-gray-700 px-2 py-1 rounded-full text-xs hover:bg-gray-300"
+                          >
                             #{tag}
-                          </span>
+                          </button>
                         ))}
                       </span>
                     )}
