@@ -49,9 +49,6 @@ export default function RootLayout({
             <Link href="/features" className="hover:text-blue-600 transition">
               機能
             </Link>
-            <Link href="/design" className="hover:text-blue-600 transition">
-              設計所
-            </Link>
             <Link href="/contact" className="hover:text-blue-600 transition">
               お問い合わせ
             </Link>
