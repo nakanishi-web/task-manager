@@ -16,21 +16,36 @@ type WarningBanner = {
 };
 
 export default function Home() {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [newTask, setNewTask] = useState("");
-  const [deadline, setDeadline] = useState("");
-  const [project, setProject] = useState("");
-  const [newTags, setNewTags] = useState("");
-  const [selectedProject, setSelectedProject] = useState("all");
-  const [selectedTag, setSelectedTag] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "done">("all");
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
-  const [editingTaskText, setEditingTaskText] = useState("");
-  const [editingDeadline, setEditingDeadline] = useState("");
-  const [editingProject, setEditingProject] = useState("");
-  const [editingTags, setEditingTags] = useState("");
-  const [warningBanner, setWarningBanner] = useState<WarningBanner>({ show: false, tasks: [] });
-  const [isHydrated, setIsHydrated] = useState(false);
+  type RawTask = {
+    id?: unknown
+    text?: unknown
+    done?: unknown
+    deadline?: unknown
+    project?: unknown
+    tags?: unknown
+  }
+
+  const loadSavedTasks = (): Task[] => {
+    const saved = localStorage.getItem("tasks")
+    if (!saved) return []
+
+    const parsed = JSON.parse(saved) as unknown
+    if (!Array.isArray(parsed)) return []
+
+    return parsed.map((task) => {
+      const rawTask = task as RawTask
+      return {
+        id: typeof rawTask.id === "string" ? rawTask.id : crypto.randomUUID(),
+        text: typeof rawTask.text === "string" ? rawTask.text : "",
+        done: typeof rawTask.done === "boolean" ? rawTask.done : false,
+        deadline: typeof rawTask.deadline === "string" && rawTask.deadline ? rawTask.deadline : "未設定",
+        project: typeof rawTask.project === "string" && rawTask.project ? rawTask.project : "未分類",
+        tags: Array.isArray(rawTask.tags)
+          ? rawTask.tags.filter((tag): tag is string => typeof tag === "string")
+          : [],
+      }
+    })
+  }
 
   const parseTags = (tagsText: string) =>
     tagsText
@@ -73,31 +88,29 @@ export default function Home() {
     return upcomingTasks;
   };
 
-  // 初回読み込み：ローカルストレージからタスクを復元
-  useEffect(() => {
-    const saved = localStorage.getItem("tasks");
-    if (saved) {
-      const loadedTasks = JSON.parse(saved).map((task: any) => ({
-        ...task,
-        project: task.project || "未分類",
-        tags: Array.isArray(task.tags) ? task.tags : [],
-      }));
-      setTasks(loadedTasks);
-
-      // 期限が近いタスクをチェック
-      const upcomingTasks = checkUpcomingDeadlines(loadedTasks);
-      if (upcomingTasks.length > 0) {
-        setWarningBanner({ show: true, tasks: upcomingTasks });
-      }
-    }
-    setIsHydrated(true);
-  }, []);
+  const initialTasks = typeof window !== "undefined" ? loadSavedTasks() : [];
+  const [tasks, setTasks] = useState<Task[]>(initialTasks);
+  const [newTask, setNewTask] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [project, setProject] = useState("");
+  const [newTags, setNewTags] = useState("");
+  const [selectedProject, setSelectedProject] = useState("all");
+  const [selectedTag, setSelectedTag] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "done">("all");
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingTaskText, setEditingTaskText] = useState("");
+  const [editingDeadline, setEditingDeadline] = useState("");
+  const [editingProject, setEditingProject] = useState("");
+  const [editingTags, setEditingTags] = useState("");
+  const [warningBanner, setWarningBanner] = useState<WarningBanner>(() => {
+    const upcomingTasks = checkUpcomingDeadlines(initialTasks);
+    return { show: upcomingTasks.length > 0, tasks: upcomingTasks };
+  });
 
   // タスクが変わるたびにローカルストレージへ保存
   useEffect(() => {
-    if (!isHydrated) return;
     localStorage.setItem("tasks", JSON.stringify(tasks));
-  }, [tasks, isHydrated]);
+  }, [tasks]);
 
   // タスク追加
   const addTask = () => {
