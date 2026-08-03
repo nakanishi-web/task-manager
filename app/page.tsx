@@ -16,21 +16,36 @@ type WarningBanner = {
 };
 
 export default function Home() {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [newTask, setNewTask] = useState("");
-  const [deadline, setDeadline] = useState("");
-  const [project, setProject] = useState("");
-  const [newTags, setNewTags] = useState("");
-  const [selectedProject, setSelectedProject] = useState("all");
-  const [selectedTag, setSelectedTag] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "done">("all");
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
-  const [editingTaskText, setEditingTaskText] = useState("");
-  const [editingDeadline, setEditingDeadline] = useState("");
-  const [editingProject, setEditingProject] = useState("");
-  const [editingTags, setEditingTags] = useState("");
-  const [warningBanner, setWarningBanner] = useState<WarningBanner>({ show: false, tasks: [] });
-  const [isHydrated, setIsHydrated] = useState(false);
+  type RawTask = {
+    id?: unknown
+    text?: unknown
+    done?: unknown
+    deadline?: unknown
+    project?: unknown
+    tags?: unknown
+  }
+
+  const loadSavedTasks = (): Task[] => {
+    const saved = localStorage.getItem("tasks")
+    if (!saved) return []
+
+    const parsed = JSON.parse(saved) as unknown
+    if (!Array.isArray(parsed)) return []
+
+    return parsed.map((task) => {
+      const rawTask = task as RawTask
+      return {
+        id: typeof rawTask.id === "string" ? rawTask.id : crypto.randomUUID(),
+        text: typeof rawTask.text === "string" ? rawTask.text : "",
+        done: typeof rawTask.done === "boolean" ? rawTask.done : false,
+        deadline: typeof rawTask.deadline === "string" && rawTask.deadline ? rawTask.deadline : "未設定",
+        project: typeof rawTask.project === "string" && rawTask.project ? rawTask.project : "未分類",
+        tags: Array.isArray(rawTask.tags)
+          ? rawTask.tags.filter((tag): tag is string => typeof tag === "string")
+          : [],
+      }
+    })
+  }
 
   const parseTags = (tagsText: string) =>
     tagsText
@@ -73,38 +88,56 @@ export default function Home() {
     return upcomingTasks;
   };
 
-  // 初回読み込み：ローカルストレージからタスクを復元
-  useEffect(() => {
-    const saved = localStorage.getItem("tasks");
-    if (saved) {
-      const loadedTasks = JSON.parse(saved).map((task: any) => ({
-        ...task,
-        project: task.project || "未分類",
-        tags: Array.isArray(task.tags) ? task.tags : [],
-      }));
-      setTasks(loadedTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [newTask, setNewTask] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [project, setProject] = useState("");
+  const [newTags, setNewTags] = useState("");
+  const [selectedProject, setSelectedProject] = useState("all");
+  const [selectedTag, setSelectedTag] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "done">("all");
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingTaskText, setEditingTaskText] = useState("");
+  const [editingDeadline, setEditingDeadline] = useState("");
+  const [editingProject, setEditingProject] = useState("");
+  const [editingTags, setEditingTags] = useState("");
+  const [warningBanner, setWarningBanner] = useState<WarningBanner>({ show: false, tasks: [] });
 
-      // 期限が近いタスクをチェック
-      const upcomingTasks = checkUpcomingDeadlines(loadedTasks);
-      if (upcomingTasks.length > 0) {
-        setWarningBanner({ show: true, tasks: upcomingTasks });
-      }
+  const updateWarningBanner = (taskList: Task[]) => {
+    const upcomingTasks = checkUpcomingDeadlines(taskList);
+    setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
+  };
+
+  const initializeTasks = async () => {
+    const localTasks = loadSavedTasks();
+    if (localTasks.length > 0) {
+      await fetch("/api/tasks/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tasks: localTasks }),
+      });
+      localStorage.removeItem("tasks");
     }
-    setIsHydrated(true);
+
+    const res = await fetch("/api/tasks", { cache: "no-store" });
+    if (!res.ok) return;
+
+    const json = (await res.json()) as { tasks: Task[] };
+    setTasks(json.tasks);
+    updateWarningBanner(json.tasks);
+  };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void initializeTasks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // タスクが変わるたびにローカルストレージへ保存
-  useEffect(() => {
-    if (!isHydrated) return;
-    localStorage.setItem("tasks", JSON.stringify(tasks));
-  }, [tasks, isHydrated]);
-
   // タスク追加
-  const addTask = () => {
+  const addTask = async () => {
     if (newTask.trim() === "") return;
 
-    const newItem = {
-      id: crypto.randomUUID(),
+    const draftTask = {
       text: newTask,
       done: false,
       deadline: deadline || "未設定",
@@ -112,9 +145,17 @@ export default function Home() {
       tags: parseTags(newTags),
     };
 
-    const updatedTasks = [...tasks, newItem];
+    const res = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draftTask),
+    });
+    if (!res.ok) return;
+
+    const json = (await res.json()) as { task: Task };
+    const updatedTasks = [...tasks, json.task];
     setTasks(updatedTasks);
-    localStorage.setItem("tasks", JSON.stringify(updatedTasks));
+    updateWarningBanner(updatedTasks);
 
     // 入力欄リセット
     setNewTask("");
@@ -122,23 +163,17 @@ export default function Home() {
     setProject("");
     setNewTags("");
 
-    // 期限が近いタスクをチェック
-    const upcomingTasks = checkUpcomingDeadlines(updatedTasks);
-    if (upcomingTasks.length > 0) {
-      setWarningBanner({ show: true, tasks: upcomingTasks });
-    }
-
     // 🔔 追加直後に期限通知を出す（確実に通知が出る）
-    if (newItem.deadline !== "未設定") {
+    if (draftTask.deadline !== "未設定") {
       const today = new Date();
-      const taskDate = new Date(newItem.deadline);
+      const taskDate = new Date(draftTask.deadline);
       const diffDays = Math.floor(
         (taskDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
       );
 
       if (diffDays === 1 && Notification.permission === "granted") {
         new Notification("期限が近いタスク", {
-          body: `${newItem.text} の期限は明日です！`,
+          body: `${draftTask.text} の期限は明日です！`,
         });
       }
     }
@@ -167,58 +202,63 @@ export default function Home() {
     setEditingTags("");
   };
 
-  const saveTaskEdit = () => {
+  const saveTaskEdit = async () => {
     if (!editingTaskId) return;
 
+    const target = tasks.find((task) => task.id === editingTaskId);
+    if (!target) return;
+
+    const res = await fetch(`/api/tasks/${editingTaskId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: editingTaskText.trim() || target.text,
+        deadline: editingDeadline || "未設定",
+        project: editingProject.trim() || "未分類",
+        tags: parseTags(editingTags),
+      }),
+    });
+
+    if (!res.ok) return;
+    const json = (await res.json()) as { task: Task };
+
     const updatedTasks = tasks.map((task) =>
-      task.id === editingTaskId
-        ? {
-            ...task,
-            text: editingTaskText.trim() || task.text,
-            deadline: editingDeadline || "未設定",
-            project: editingProject.trim() || "未分類",
-            tags: parseTags(editingTags),
-          }
-        : task
+      task.id === editingTaskId ? json.task : task
     );
 
     setTasks(updatedTasks);
-    localStorage.setItem("tasks", JSON.stringify(updatedTasks));
-    const upcomingTasks = checkUpcomingDeadlines(updatedTasks);
-    setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
+    updateWarningBanner(updatedTasks);
     cancelEditing();
   };
 
   // タスク削除
-const removeTask = (id: string) => {
-  const updatedTasks = tasks.filter(task => task.id !== id);
+const removeTask = async (id: string) => {
+  const res = await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+  if (!res.ok) return;
+
+  const updatedTasks = tasks.filter((task) => task.id !== id);
   setTasks(updatedTasks);
-  localStorage.setItem("tasks", JSON.stringify(updatedTasks));
-  
-  // 期限が近いタスク一覧を更新
-  const upcomingTasks = checkUpcomingDeadlines(updatedTasks);
-  if (upcomingTasks.length > 0) {
-    setWarningBanner({ show: true, tasks: upcomingTasks });
-  } else {
-    setWarningBanner({ show: false, tasks: [] });
-  }
+  updateWarningBanner(updatedTasks);
 };
 
   // 完了チェック切り替え
-const toggleDone = (id: string) => {
-  const updatedTasks = tasks.map(task =>
-    task.id === id ? { ...task, done: !task.done } : task
+const toggleDone = async (id: string) => {
+  const target = tasks.find((task) => task.id === id);
+  if (!target) return;
+
+  const res = await fetch(`/api/tasks/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ done: !target.done }),
+  });
+  if (!res.ok) return;
+
+  const json = (await res.json()) as { task: Task };
+  const updatedTasks = tasks.map((task) =>
+    task.id === id ? json.task : task
   );
   setTasks(updatedTasks);
-  localStorage.setItem("tasks", JSON.stringify(updatedTasks));
-  
-  // 期限が近いタスク一覧を更新
-  const upcomingTasks = checkUpcomingDeadlines(updatedTasks);
-  if (upcomingTasks.length > 0) {
-    setWarningBanner({ show: true, tasks: upcomingTasks });
-  } else {
-    setWarningBanner({ show: false, tasks: [] });
-  }
+  updateWarningBanner(updatedTasks);
 };
 
   // 🔹期限フォーマットを日本語に変換
@@ -239,7 +279,8 @@ const toggleDone = (id: string) => {
 
     if (diffDays < 0) return "text-gray-400"; // 期限切れ
     if (diffDays === 0) return "text-red-500"; // 今日
-    if (diffDays === 1) return "text-orange-500"; // 明日
+    if (diffDays === 1) return "text-red-500"; // 前日
+    if (diffDays === 2) return "text-orange-500"; // 前々日
     return "text-gray-700"; // それ以降
   };
 
