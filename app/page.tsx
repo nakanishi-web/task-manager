@@ -279,7 +279,8 @@ const toggleDone = async (id: string) => {
 
     if (diffDays < 0) return "text-gray-400"; // 期限切れ
     if (diffDays === 0) return "text-red-500"; // 今日
-    if (diffDays === 1) return "text-orange-500"; // 明日
+    if (diffDays === 1) return "text-red-500"; // 前日
+    if (diffDays === 2) return "text-orange-500"; // 前々日
     return "text-gray-700"; // それ以降
   };
 

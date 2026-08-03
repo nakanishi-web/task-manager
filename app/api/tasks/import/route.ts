@@ -10,6 +10,18 @@ type ImportTask = {
   tags?: string[]
 }
 
+type NormalizedTask = {
+  text: string
+  done: boolean
+  deadline: string
+  project: string
+  tags: string
+  userId: string
+}
+
+const toSignature = (task: Pick<NormalizedTask, 'text' | 'done' | 'deadline' | 'project' | 'tags'>) =>
+  [task.text, task.done ? '1' : '0', task.deadline, task.project, task.tags].join('||')
+
 export async function POST(request: Request) {
   const userId = getSessionUserId(request.headers.get('cookie'))
   if (!userId) {
@@ -23,8 +35,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, imported: 0 })
   }
 
-  const data = items
-    .map((task) => ({
+  const normalized = items
+    .map((task): NormalizedTask => ({
       text: (task.text || '').trim(),
       done: typeof task.done === 'boolean' ? task.done : false,
       deadline: task.deadline || '未設定',
@@ -36,9 +48,33 @@ export async function POST(request: Request) {
     }))
     .filter((task) => task.text.length > 0)
 
+  if (normalized.length === 0) {
+    return NextResponse.json({ ok: true, imported: 0, skipped: items.length })
+  }
+
+  const existing = await prisma.task.findMany({
+    where: { userId },
+    select: { text: true, done: true, deadline: true, project: true, tags: true },
+  })
+
+  const existingSignatures = new Set(existing.map((task) => toSignature(task)))
+  const payloadSignatures = new Set<string>()
+
+  const data = normalized.filter((task) => {
+    const signature = toSignature(task)
+    if (existingSignatures.has(signature)) return false
+    if (payloadSignatures.has(signature)) return false
+    payloadSignatures.add(signature)
+    return true
+  })
+
   if (data.length > 0) {
     await prisma.task.createMany({ data })
   }
 
-  return NextResponse.json({ ok: true, imported: data.length })
+  return NextResponse.json({
+    ok: true,
+    imported: data.length,
+    skipped: normalized.length - data.length,
+  })
 }
