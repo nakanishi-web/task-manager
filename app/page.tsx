@@ -15,6 +15,21 @@ type WarningBanner = {
   tasks: Task[];
 };
 
+type DeadlineRiskFilter = "all" | "overdue" | "today" | "tomorrow" | "dayAfterTomorrow";
+
+const statusLabelMap: Record<"all" | "active" | "done", string> = {
+  all: "すべて",
+  active: "未完了",
+  done: "完了",
+};
+
+const deadlineRiskLabelMap: Record<Exclude<DeadlineRiskFilter, "all">, string> = {
+  overdue: "期限切れ",
+  today: "今日期限",
+  tomorrow: "前日",
+  dayAfterTomorrow: "前々日",
+};
+
 export default function Home() {
   type RawTask = {
     id?: unknown
@@ -57,6 +72,7 @@ export default function Home() {
     setSelectedProject("all");
     setSelectedTag("all");
     setStatusFilter("all");
+    setDeadlineRiskFilter("all");
   };
 
   const parseDateAsUtcMidnight = (dateString: string) => {
@@ -67,6 +83,22 @@ export default function Home() {
   const getUtcMidnightToday = () => {
     const now = new Date();
     return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  };
+
+  const getDeadlineBucket = (task: Task): DeadlineRiskFilter => {
+    if (task.deadline === "未設定") return "all";
+
+    const today = getUtcMidnightToday();
+    const taskDate = parseDateAsUtcMidnight(task.deadline);
+    const diffDays = Math.floor(
+      (taskDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+    );
+
+    if (diffDays < 0) return "overdue";
+    if (diffDays === 0) return "today";
+    if (diffDays === 1) return "tomorrow";
+    if (diffDays === 2) return "dayAfterTomorrow";
+    return "all";
   };
 
   // 期限が近いタスクをチェックする関数
@@ -96,6 +128,7 @@ export default function Home() {
   const [selectedProject, setSelectedProject] = useState("all");
   const [selectedTag, setSelectedTag] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "done">("all");
+  const [deadlineRiskFilter, setDeadlineRiskFilter] = useState<DeadlineRiskFilter>("all");
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTaskText, setEditingTaskText] = useState("");
   const [editingDeadline, setEditingDeadline] = useState("");
@@ -106,6 +139,28 @@ export default function Home() {
   const updateWarningBanner = (taskList: Task[]) => {
     const upcomingTasks = checkUpcomingDeadlines(taskList);
     setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
+  };
+
+  const handleStatusCardClick = (nextStatus: "all" | "active" | "done") => {
+    const toggledStatus = statusFilter === nextStatus ? "all" : nextStatus;
+    setStatusFilter(toggledStatus);
+    setDeadlineRiskFilter("all");
+  };
+
+  const handleProjectProgressClick = (projectName: string) => {
+    setSelectedProject((prev) => (prev === projectName ? "all" : projectName));
+  };
+
+  const handleDeadlineRiskClick = (risk: DeadlineRiskFilter) => {
+    const isSameRisk = statusFilter === "active" && deadlineRiskFilter === risk;
+    if (isSameRisk) {
+      setStatusFilter("all");
+      setDeadlineRiskFilter("all");
+      return;
+    }
+
+    setStatusFilter("active");
+    setDeadlineRiskFilter(risk);
   };
 
   const initializeTasks = async () => {
@@ -300,7 +355,10 @@ const toggleDone = async (id: string) => {
       (statusFilter === "active" && !task.done) ||
       (statusFilter === "done" && task.done);
     const tagMatch = selectedTag === "all" || task.tags.includes(selectedTag);
-    return projectMatch && statusMatch && tagMatch;
+    const deadlineMatch =
+      deadlineRiskFilter === "all" ||
+      (!task.done && getDeadlineBucket(task) === deadlineRiskFilter);
+    return projectMatch && statusMatch && tagMatch && deadlineMatch;
   });
 
   const groupedTasks = filteredTasks.reduce<Record<string, Task[]>>((groups, task) => {
@@ -309,6 +367,119 @@ const toggleDone = async (id: string) => {
     groups[key].push(task);
     return groups;
   }, {});
+
+  const totalTasks = tasks.length;
+  const completedTasks = tasks.filter((task) => task.done).length;
+  const activeTasks = totalTasks - completedTasks;
+  const completionRate = totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+
+  const deadlineRisk = tasks.reduce(
+    (acc, task) => {
+      if (task.done || task.deadline === "未設定") return acc;
+
+      const today = getUtcMidnightToday();
+      const taskDate = parseDateAsUtcMidnight(task.deadline);
+      const diffDays = Math.floor(
+        (taskDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+      );
+
+      if (diffDays < 0) acc.overdue += 1;
+      else if (diffDays === 0) acc.today += 1;
+      else if (diffDays === 1) acc.tomorrow += 1;
+      else if (diffDays === 2) acc.dayAfterTomorrow += 1;
+
+      return acc;
+    },
+    { overdue: 0, today: 0, tomorrow: 0, dayAfterTomorrow: 0 }
+  );
+
+  const projectProgress = Object.entries(
+    tasks.reduce<Record<string, { total: number; completed: number }>>((acc, task) => {
+      const key = task.project || "未分類";
+      if (!acc[key]) {
+        acc[key] = { total: 0, completed: 0 };
+      }
+      acc[key].total += 1;
+      if (task.done) {
+        acc[key].completed += 1;
+      }
+      return acc;
+    }, {})
+  ).map(([name, stats]) => ({
+    name,
+    total: stats.total,
+    completed: stats.completed,
+    rate: stats.total === 0 ? 0 : Math.round((stats.completed / stats.total) * 100),
+  }));
+
+  const activeFilterChips: Array<{
+    key: string;
+    label: string;
+    onClear: () => void;
+  }> = [
+    ...(selectedProject !== "all"
+      ? [{ key: "project", label: `案件: ${selectedProject}`, onClear: () => setSelectedProject("all") }]
+      : []),
+    ...(statusFilter !== "all"
+      ? [{ key: "status", label: `状態: ${statusLabelMap[statusFilter]}`, onClear: () => setStatusFilter("all") }]
+      : []),
+    ...(selectedTag !== "all"
+      ? [{ key: "tag", label: `タグ: #${selectedTag}`, onClear: () => setSelectedTag("all") }]
+      : []),
+    ...(deadlineRiskFilter !== "all"
+      ? [{ key: "risk", label: `期限: ${deadlineRiskLabelMap[deadlineRiskFilter]}`, onClear: () => setDeadlineRiskFilter("all") }]
+      : []),
+  ];
+
+  const tasksWithoutDeadline = tasks.filter((task) => !task.done && task.deadline === "未設定").length;
+  const unclassifiedActiveTasks = tasks.filter(
+    (task) => !task.done && (task.project || "未分類") === "未分類"
+  ).length;
+
+  const nextActionCandidates = [
+    {
+      id: "overdue",
+      title: "期限切れタスクを処理",
+      detail: `${deadlineRisk.overdue}件の期限切れがあります。先に対応して遅延を止めましょう。`,
+      cta: "期限切れだけ表示",
+      show: deadlineRisk.overdue > 0,
+      onClick: () => handleDeadlineRiskClick("overdue"),
+    },
+    {
+      id: "today",
+      title: "今日中タスクを優先",
+      detail: `${deadlineRisk.today}件が今日期限です。今日分を先に片付けるのが安全です。`,
+      cta: "今日期限を表示",
+      show: deadlineRisk.today > 0,
+      onClick: () => handleDeadlineRiskClick("today"),
+    },
+    {
+      id: "tomorrow",
+      title: "明日期限を前倒し",
+      detail: `${deadlineRisk.tomorrow}件が前日ステータスです。前倒しで余裕を作れます。`,
+      cta: "前日タスクを表示",
+      show: deadlineRisk.tomorrow > 0,
+      onClick: () => handleDeadlineRiskClick("tomorrow"),
+    },
+    {
+      id: "noDeadline",
+      title: "未設定期限を整理",
+      detail: `${tasksWithoutDeadline}件が期限未設定です。期限を入れると優先順位が明確になります。`,
+      cta: "未完了を表示",
+      show: tasksWithoutDeadline > 0,
+      onClick: () => setStatusFilter("active"),
+    },
+    {
+      id: "unclassified",
+      title: "未分類案件を整理",
+      detail: `${unclassifiedActiveTasks}件が未分類です。案件名をつけると進捗管理しやすくなります。`,
+      cta: "未分類を表示",
+      show: unclassifiedActiveTasks > 0,
+      onClick: () => setSelectedProject("未分類"),
+    },
+  ];
+
+  const nextActions = nextActionCandidates.filter((item) => item.show).slice(0, 3);
 
   return (
     <>
@@ -359,6 +530,134 @@ const toggleDone = async (id: string) => {
       <p className="text-lg text-gray-700 mb-8 font-medium tracking-wide">
         あなたの毎日のタスクを整理して、効率的に進めましょう。
       </p>
+
+      <section className="mx-auto w-full max-w-5xl mb-8">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+          <button
+            type="button"
+            onClick={() => handleStatusCardClick("all")}
+            className={`rounded-2xl bg-white border p-4 shadow-sm text-left transition ${
+              statusFilter === "all" ? "border-blue-400 ring-2 ring-blue-200" : "border-blue-100 hover:border-blue-300"
+            }`}
+          >
+            <p className="text-sm text-gray-500">総タスク</p>
+            <p className="text-3xl font-bold text-blue-700 mt-1">{totalTasks}</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleStatusCardClick("active")}
+            className={`rounded-2xl bg-white border p-4 shadow-sm text-left transition ${
+              statusFilter === "active" ? "border-blue-400 ring-2 ring-blue-200" : "border-blue-100 hover:border-blue-300"
+            }`}
+          >
+            <p className="text-sm text-gray-500">未完了</p>
+            <p className="text-3xl font-bold text-blue-700 mt-1">{activeTasks}</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleStatusCardClick("done")}
+            className={`rounded-2xl bg-white border p-4 shadow-sm text-left transition ${
+              statusFilter === "done" ? "border-blue-400 ring-2 ring-blue-200" : "border-blue-100 hover:border-blue-300"
+            }`}
+          >
+            <p className="text-sm text-gray-500">完了</p>
+            <p className="text-3xl font-bold text-blue-700 mt-1">{completedTasks}</p>
+          </button>
+          <div className="rounded-2xl bg-white border border-blue-100 p-4 shadow-sm">
+            <p className="text-sm text-gray-500">完了率</p>
+            <p className="text-3xl font-bold text-blue-700 mt-1">{completionRate}%</p>
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-2xl bg-white border border-blue-100 p-5 shadow-sm">
+            <h2 className="text-base font-semibold text-blue-700 mb-4">案件別進捗</h2>
+            {projectProgress.length === 0 ? (
+              <p className="text-sm text-gray-500">案件データがまだありません。</p>
+            ) : (
+              <div className="space-y-4">
+                {projectProgress.map((project) => (
+                  <button
+                    key={project.name}
+                    type="button"
+                    onClick={() => handleProjectProgressClick(project.name)}
+                    className={`w-full text-left rounded-xl border p-2 transition ${
+                      selectedProject === project.name ? "border-blue-300 bg-blue-50" : "border-transparent hover:border-blue-200"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-sm mb-1">
+                      <span className="font-medium text-gray-700">{project.name}</span>
+                      <span className="text-gray-500">
+                        {project.completed}/{project.total} ({project.rate}%)
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-blue-100 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-blue-500 transition-all"
+                        style={{ width: `${project.rate}%` }}
+                      />
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl bg-white border border-blue-100 p-5 shadow-sm">
+            <h2 className="text-base font-semibold text-blue-700 mb-4">期限リスク</h2>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => handleDeadlineRiskClick("overdue")}
+                className={`rounded-xl border p-3 text-left transition ${
+                  statusFilter === "active" && deadlineRiskFilter === "overdue"
+                    ? "bg-red-100 border-red-300 ring-2 ring-red-200"
+                    : "bg-red-50 border-red-100 hover:border-red-200"
+                }`}
+              >
+                <p className="text-xs text-red-500">期限切れ</p>
+                <p className="text-2xl font-bold text-red-600 mt-1">{deadlineRisk.overdue}</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeadlineRiskClick("today")}
+                className={`rounded-xl border p-3 text-left transition ${
+                  statusFilter === "active" && deadlineRiskFilter === "today"
+                    ? "bg-red-100 border-red-300 ring-2 ring-red-200"
+                    : "bg-red-50 border-red-100 hover:border-red-200"
+                }`}
+              >
+                <p className="text-xs text-red-500">今日期限</p>
+                <p className="text-2xl font-bold text-red-600 mt-1">{deadlineRisk.today}</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeadlineRiskClick("tomorrow")}
+                className={`rounded-xl border p-3 text-left transition ${
+                  statusFilter === "active" && deadlineRiskFilter === "tomorrow"
+                    ? "bg-orange-100 border-orange-300 ring-2 ring-orange-200"
+                    : "bg-orange-50 border-orange-100 hover:border-orange-200"
+                }`}
+              >
+                <p className="text-xs text-orange-500">前日</p>
+                <p className="text-2xl font-bold text-orange-600 mt-1">{deadlineRisk.tomorrow}</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeadlineRiskClick("dayAfterTomorrow")}
+                className={`rounded-xl border p-3 text-left transition ${
+                  statusFilter === "active" && deadlineRiskFilter === "dayAfterTomorrow"
+                    ? "bg-orange-100 border-orange-300 ring-2 ring-orange-200"
+                    : "bg-orange-50 border-orange-100 hover:border-orange-200"
+                }`}
+              >
+                <p className="text-xs text-orange-500">前々日</p>
+                <p className="text-2xl font-bold text-orange-600 mt-1">{deadlineRisk.dayAfterTomorrow}</p>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* 入力フォーム */}
       <div className="mx-auto w-full max-w-4xl">
@@ -441,7 +740,9 @@ const toggleDone = async (id: string) => {
             {[...new Set(tasks.map((task) => task.project || "未分類"))].map((projectName) => (
               <button
                 key={projectName}
-                onClick={() => setSelectedProject(projectName)}
+                onClick={() =>
+                  setSelectedProject((prev) => (prev === projectName ? "all" : projectName))
+                }
                 className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${selectedProject === projectName ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
               >
                 {projectName}
@@ -456,7 +757,13 @@ const toggleDone = async (id: string) => {
             {(["all", "active", "done"] as const).map((status) => (
               <button
                 key={status}
-                onClick={() => setStatusFilter(status)}
+                onClick={() => {
+                  const toggledStatus = statusFilter === status ? "all" : status;
+                  setStatusFilter(toggledStatus);
+                  if (toggledStatus !== "active") {
+                    setDeadlineRiskFilter("all");
+                  }
+                }}
                 className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${statusFilter === status ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
               >
                 {status === "all" ? "すべて" : status === "active" ? "未完了" : "完了"}
@@ -477,7 +784,7 @@ const toggleDone = async (id: string) => {
             {[...new Set(tasks.flatMap((task) => task.tags))].map((tagName) => (
               <button
                 key={tagName}
-                onClick={() => setSelectedTag(tagName)}
+                onClick={() => setSelectedTag((prev) => (prev === tagName ? "all" : tagName))}
                 className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${selectedTag === tagName ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
               >
                 {tagName}
@@ -485,14 +792,67 @@ const toggleDone = async (id: string) => {
             ))}
           </div>
         </div>
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={clearFilters}
-            className="h-9 px-4 rounded-full border bg-white text-gray-700 hover:bg-gray-100"
-          >
-            フィルタ解除
-          </button>
+        <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-blue-800">フィルタ状態</h3>
+            <div className="flex items-center gap-3">
+              <p className="text-sm text-blue-700">
+                表示中: {filteredTasks.length} / {tasks.length}件
+              </p>
+              {activeFilterChips.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="rounded-full border border-blue-200 bg-white px-3 py-1 text-xs text-blue-800 hover:bg-blue-100"
+                >
+                  フィルタを全解除
+                </button>
+              )}
+            </div>
+          </div>
+
+          {activeFilterChips.length === 0 ? (
+            <p className="mt-3 text-sm text-gray-600">現在はフィルタ未適用です。</p>
+          ) : (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {activeFilterChips.map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  onClick={chip.onClear}
+                  className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-white px-3 py-1 text-sm text-blue-800 hover:bg-blue-100"
+                >
+                  <span>{chip.label}</span>
+                  <span className="text-blue-500">×</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-4">
+          <h3 className="text-sm font-semibold text-emerald-800">次にやるべきタスク</h3>
+          {nextActions.length === 0 ? (
+            <p className="mt-3 text-sm text-emerald-700">
+              優先アクションはありません。未完了タスクの追加や案件整理を進められます。
+            </p>
+          ) : (
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              {nextActions.map((action) => (
+                <div key={action.id} className="rounded-lg border border-emerald-200 bg-white p-3">
+                  <p className="text-sm font-semibold text-gray-800">{action.title}</p>
+                  <p className="mt-1 text-xs text-gray-600">{action.detail}</p>
+                  <button
+                    type="button"
+                    onClick={action.onClick}
+                    className="mt-3 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600"
+                  >
+                    {action.cta}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -575,7 +935,9 @@ const toggleDone = async (id: string) => {
           <div key={projectName} className="mb-8 mx-auto w-full max-w-4xl">
             <button
               type="button"
-              onClick={() => setSelectedProject(projectName)}
+              onClick={() =>
+                setSelectedProject((prev) => (prev === projectName ? "all" : projectName))
+              }
               className="mb-4 w-full text-left px-4 py-2 rounded-xl bg-blue-100 text-blue-800 font-semibold shadow-sm hover:bg-blue-200"
             >
               {projectName} ({projectTasks.length}件)
@@ -626,7 +988,7 @@ const toggleDone = async (id: string) => {
                           <button
                             key={tag}
                             type="button"
-                            onClick={() => setSelectedTag(tag)}
+                            onClick={() => setSelectedTag((prev) => (prev === tag ? "all" : tag))}
                             className="inline-flex items-center bg-gray-200 text-gray-700 px-2 py-1 rounded-full text-xs hover:bg-gray-300"
                           >
                             #{tag}
