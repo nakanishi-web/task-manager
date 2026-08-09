@@ -1,5 +1,22 @@
 "use client";
 import { useState, useEffect } from "react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 type Task = {
   id: string
@@ -8,6 +25,7 @@ type Task = {
   deadline: string;
   project: string;
   tags: string[];
+  sortOrder: number;
 };
 
 type WarningBanner = {
@@ -15,20 +33,135 @@ type WarningBanner = {
   tasks: Task[];
 };
 
-type DeadlineRiskFilter = "all" | "overdue" | "today" | "tomorrow" | "dayAfterTomorrow";
-
-const statusLabelMap: Record<"all" | "active" | "done", string> = {
-  all: "すべて",
-  active: "未完了",
-  done: "完了",
+type SortableTaskRowProps = {
+  task: Task;
+  projectName: string;
+  onToggleDone: (id: string) => void;
+  onStartEditing: (task: Task) => void;
+  onMoveUp: (id: string, projectName: string) => void;
+  onMoveDown: (id: string, projectName: string) => void;
+  onRemove: (id: string) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onTagClick: (tag: string) => void;
+  formatDate: (dateString: string) => string;
+  getDeadlineColor: (deadline: string) => string;
 };
 
-const deadlineRiskLabelMap: Record<Exclude<DeadlineRiskFilter, "all">, string> = {
-  overdue: "期限切れ",
-  today: "今日期限",
-  tomorrow: "前日",
-  dayAfterTomorrow: "前々日",
-};
+function SortableTaskRow({
+  task,
+  projectName,
+  onToggleDone,
+  onStartEditing,
+  onMoveUp,
+  onMoveDown,
+  onRemove,
+  canMoveUp,
+  canMoveDown,
+  onTagClick,
+  formatDate,
+  getDeadlineColor,
+}: SortableTaskRowProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: task.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={style}
+      className={`border-b py-3 flex flex-col gap-1 rounded-lg p-2 ${
+        task.done ? "bg-gray-100" : "bg-white"
+      } ${isDragging ? "opacity-60 shadow-lg" : ""}`}
+    >
+      <div className="flex items-center gap-3">
+        <button
+          ref={setActivatorNodeRef}
+          type="button"
+          aria-label="並び替え"
+          title="ドラッグして並び替え"
+          className="cursor-grab rounded-md px-1 text-gray-400 hover:text-gray-600 active:cursor-grabbing"
+          {...attributes}
+          {...listeners}
+        >
+          ⋮⋮
+        </button>
+        <input
+          type="checkbox"
+          checked={task.done}
+          onChange={() => onToggleDone(task.id)}
+          className="cursor-pointer"
+        />
+        <span
+          className={`font-medium tracking-wide flex-1 ${
+            task.done ? "line-through text-gray-400" : "text-gray-700"
+          }`}
+        >
+          {task.text}
+        </span>
+        <button
+          onClick={() => onStartEditing(task)}
+          className="text-blue-500 hover:text-blue-600 font-bold"
+        >
+          編集
+        </button>
+        <button
+          type="button"
+          onClick={() => onMoveUp(task.id, projectName)}
+          disabled={!canMoveUp}
+          className="text-gray-500 hover:text-gray-700 font-bold disabled:text-gray-300"
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          onClick={() => onMoveDown(task.id, projectName)}
+          disabled={!canMoveDown}
+          className="text-gray-500 hover:text-gray-700 font-bold disabled:text-gray-300"
+        >
+          ↓
+        </button>
+        <button
+          onClick={() => onRemove(task.id)}
+          className="text-red-500 hover:text-red-600 font-bold"
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="ml-7 flex flex-wrap gap-2 items-center text-sm text-gray-600">
+        <span className={getDeadlineColor(task.deadline)}>
+          期限：{formatDate(task.deadline)}
+        </span>
+        {task.tags.length > 0 && (
+          <span className="flex flex-wrap gap-2">
+            {task.tags.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                onClick={() => onTagClick(tag)}
+                className="inline-flex items-center bg-gray-200 text-gray-700 px-2 py-1 rounded-full text-xs hover:bg-gray-300"
+              >
+                #{tag}
+              </button>
+            ))}
+          </span>
+        )}
+      </div>
+    </li>
+  );
+}
 
 export default function Home() {
   type RawTask = {
@@ -38,29 +171,37 @@ export default function Home() {
     deadline?: unknown
     project?: unknown
     tags?: unknown
+    sortOrder?: unknown
   }
 
-  const loadSavedTasks = (): Task[] => {
-    const saved = localStorage.getItem("tasks")
-    if (!saved) return []
+  const SESSION_KEY = "taskflow_session_email";
+  const COOKIE_KEY = "taskflow_session";
 
-    const parsed = JSON.parse(saved) as unknown
-    if (!Array.isArray(parsed)) return []
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [newTask, setNewTask] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [project, setProject] = useState("");
+  const [newTags, setNewTags] = useState("");
+  const [selectedProject, setSelectedProject] = useState("all");
+  const [selectedTag, setSelectedTag] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "done">("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingTaskText, setEditingTaskText] = useState("");
+  const [editingDeadline, setEditingDeadline] = useState("");
+  const [editingProject, setEditingProject] = useState("");
+  const [editingTags, setEditingTags] = useState("");
+  const [warningBanner, setWarningBanner] = useState<WarningBanner>({ show: false, tasks: [] });
+  const [isHydrated, setIsHydrated] = useState(false);
 
-    return parsed.map((task) => {
-      const rawTask = task as RawTask
-      return {
-        id: typeof rawTask.id === "string" ? rawTask.id : crypto.randomUUID(),
-        text: typeof rawTask.text === "string" ? rawTask.text : "",
-        done: typeof rawTask.done === "boolean" ? rawTask.done : false,
-        deadline: typeof rawTask.deadline === "string" && rawTask.deadline ? rawTask.deadline : "未設定",
-        project: typeof rawTask.project === "string" && rawTask.project ? rawTask.project : "未分類",
-        tags: Array.isArray(rawTask.tags)
-          ? rawTask.tags.filter((tag): tag is string => typeof tag === "string")
-          : [],
-      }
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
     })
-  }
+  );
 
   const parseTags = (tagsText: string) =>
     tagsText
@@ -68,11 +209,36 @@ export default function Home() {
       .map((tag) => tag.trim())
       .filter(Boolean);
 
+  const sortByOrder = (taskList: Task[]) =>
+    [...taskList].sort((a, b) => a.sortOrder - b.sortOrder);
+
+  const updateWarningBanner = (taskList: Task[]) => {
+    const upcomingTasks = checkUpcomingDeadlines(taskList);
+    setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
+  };
+
+  const commitTasks = (nextTasks: Task[]) => {
+    setTasks(nextTasks);
+    localStorage.setItem("tasks", JSON.stringify(nextTasks));
+    updateWarningBanner(nextTasks);
+  };
+
   const clearFilters = () => {
     setSelectedProject("all");
     setSelectedTag("all");
     setStatusFilter("all");
-    setDeadlineRiskFilter("all");
+    setSearchQuery("");
+  };
+
+  const logout = () => {
+    try {
+      localStorage.removeItem(SESSION_KEY);
+      document.cookie = `${COOKIE_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
+      document.cookie = `${COOKIE_KEY}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax`;
+    } catch {
+      // Keep logout path available even if browser storage is restricted.
+    }
+    window.location.replace("/auth");
   };
 
   const parseDateAsUtcMidnight = (dateString: string) => {
@@ -83,22 +249,6 @@ export default function Home() {
   const getUtcMidnightToday = () => {
     const now = new Date();
     return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  };
-
-  const getDeadlineBucket = (task: Task): DeadlineRiskFilter => {
-    if (task.deadline === "未設定") return "all";
-
-    const today = getUtcMidnightToday();
-    const taskDate = parseDateAsUtcMidnight(task.deadline);
-    const diffDays = Math.floor(
-      (taskDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
-    );
-
-    if (diffDays < 0) return "overdue";
-    if (diffDays === 0) return "today";
-    if (diffDays === 1) return "tomorrow";
-    if (diffDays === 2) return "dayAfterTomorrow";
-    return "all";
   };
 
   // 期限が近いタスクをチェックする関数
@@ -120,97 +270,79 @@ export default function Home() {
     return upcomingTasks;
   };
 
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [newTask, setNewTask] = useState("");
-  const [deadline, setDeadline] = useState("");
-  const [project, setProject] = useState("");
-  const [newTags, setNewTags] = useState("");
-  const [selectedProject, setSelectedProject] = useState("all");
-  const [selectedTag, setSelectedTag] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "done">("all");
-  const [deadlineRiskFilter, setDeadlineRiskFilter] = useState<DeadlineRiskFilter>("all");
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
-  const [editingTaskText, setEditingTaskText] = useState("");
-  const [editingDeadline, setEditingDeadline] = useState("");
-  const [editingProject, setEditingProject] = useState("");
-  const [editingTags, setEditingTags] = useState("");
-  const [warningBanner, setWarningBanner] = useState<WarningBanner>({ show: false, tasks: [] });
-
-  const updateWarningBanner = (taskList: Task[]) => {
-    const upcomingTasks = checkUpcomingDeadlines(taskList);
-    setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
-  };
-
-  const handleStatusCardClick = (nextStatus: "all" | "active" | "done") => {
-    const toggledStatus = statusFilter === nextStatus ? "all" : nextStatus;
-    setStatusFilter(toggledStatus);
-    setDeadlineRiskFilter("all");
-  };
-
-  const handleProjectProgressClick = (projectName: string) => {
-    setSelectedProject((prev) => (prev === projectName ? "all" : projectName));
-  };
-
-  const handleDeadlineRiskClick = (risk: DeadlineRiskFilter) => {
-    const isSameRisk = statusFilter === "active" && deadlineRiskFilter === risk;
-    if (isSameRisk) {
-      setStatusFilter("all");
-      setDeadlineRiskFilter("all");
+  // 初回読み込み：ローカルストレージからタスクを復元
+  useEffect(() => {
+    const sessionEmail = localStorage.getItem(SESSION_KEY);
+    if (!sessionEmail) {
+      window.location.href = "/auth";
       return;
     }
 
-    setStatusFilter("active");
-    setDeadlineRiskFilter(risk);
-  };
+    const saved = localStorage.getItem("tasks");
+    if (saved) {
+      const parsed = JSON.parse(saved) as unknown;
+      if (Array.isArray(parsed)) {
+        let requiresResave = false;
+        const loadedTasks = parsed.map((item, index) => {
+          const task = item as RawTask;
+          const hasSortOrder = typeof task.sortOrder === "number";
+          if (!hasSortOrder) requiresResave = true;
 
-  const initializeTasks = async () => {
-    const localTasks = loadSavedTasks();
-    if (localTasks.length > 0) {
-      await fetch("/api/tasks/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tasks: localTasks }),
-      });
-      localStorage.removeItem("tasks");
+          return {
+            id: typeof task.id === "string" ? task.id : crypto.randomUUID(),
+            text: typeof task.text === "string" ? task.text : "",
+            done: typeof task.done === "boolean" ? task.done : false,
+            deadline: typeof task.deadline === "string" && task.deadline ? task.deadline : "未設定",
+            project: typeof task.project === "string" && task.project ? task.project : "未分類",
+            tags: Array.isArray(task.tags)
+              ? task.tags.filter((tag): tag is string => typeof tag === "string")
+              : [],
+            sortOrder: hasSortOrder ? (task.sortOrder as number) : index,
+          } satisfies Task;
+        });
+
+        const orderedTasks = sortByOrder(loadedTasks);
+        const upcomingTasks = checkUpcomingDeadlines(orderedTasks);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setTasks(orderedTasks);
+        setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
+
+        if (requiresResave) {
+          localStorage.setItem("tasks", JSON.stringify(orderedTasks));
+        }
+      } else {
+        localStorage.removeItem("tasks");
+      }
     }
-
-    const res = await fetch("/api/tasks", { cache: "no-store" });
-    if (!res.ok) return;
-
-    const json = (await res.json()) as { tasks: Task[] };
-    setTasks(json.tasks);
-    updateWarningBanner(json.tasks);
-  };
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void initializeTasks();
+    setIsHydrated(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // タスクが変わるたびにローカルストレージへ保存
+  useEffect(() => {
+    if (!isHydrated) return;
+    localStorage.setItem("tasks", JSON.stringify(tasks));
+  }, [tasks, isHydrated]);
+
   // タスク追加
-  const addTask = async () => {
+  const addTask = () => {
     if (newTask.trim() === "") return;
 
-    const draftTask = {
+    const nextSortOrder =
+      tasks.length === 0 ? 0 : Math.max(...tasks.map((task) => task.sortOrder)) + 1;
+
+    const newItem = {
+      id: crypto.randomUUID(),
       text: newTask,
       done: false,
       deadline: deadline || "未設定",
       project: project.trim() || "未分類",
       tags: parseTags(newTags),
+      sortOrder: nextSortOrder,
     };
 
-    const res = await fetch("/api/tasks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(draftTask),
-    });
-    if (!res.ok) return;
-
-    const json = (await res.json()) as { task: Task };
-    const updatedTasks = [...tasks, json.task];
-    setTasks(updatedTasks);
-    updateWarningBanner(updatedTasks);
+    const updatedTasks = [...tasks, newItem];
+    commitTasks(updatedTasks);
 
     // 入力欄リセット
     setNewTask("");
@@ -219,16 +351,16 @@ export default function Home() {
     setNewTags("");
 
     // 🔔 追加直後に期限通知を出す（確実に通知が出る）
-    if (draftTask.deadline !== "未設定") {
+    if (newItem.deadline !== "未設定") {
       const today = new Date();
-      const taskDate = new Date(draftTask.deadline);
+      const taskDate = new Date(newItem.deadline);
       const diffDays = Math.floor(
         (taskDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
       );
 
       if (diffDays === 1 && Notification.permission === "granted") {
         new Notification("期限が近いタスク", {
-          body: `${draftTask.text} の期限は明日です！`,
+          body: `${newItem.text} の期限は明日です！`,
         });
       }
     }
@@ -257,64 +389,104 @@ export default function Home() {
     setEditingTags("");
   };
 
-  const saveTaskEdit = async () => {
+  const saveTaskEdit = () => {
     if (!editingTaskId) return;
 
-    const target = tasks.find((task) => task.id === editingTaskId);
-    if (!target) return;
-
-    const res = await fetch(`/api/tasks/${editingTaskId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: editingTaskText.trim() || target.text,
-        deadline: editingDeadline || "未設定",
-        project: editingProject.trim() || "未分類",
-        tags: parseTags(editingTags),
-      }),
-    });
-
-    if (!res.ok) return;
-    const json = (await res.json()) as { task: Task };
-
     const updatedTasks = tasks.map((task) =>
-      task.id === editingTaskId ? json.task : task
+      task.id === editingTaskId
+        ? {
+            ...task,
+            text: editingTaskText.trim() || task.text,
+            deadline: editingDeadline || "未設定",
+            project: editingProject.trim() || "未分類",
+            tags: parseTags(editingTags),
+          }
+        : task
     );
 
-    setTasks(updatedTasks);
-    updateWarningBanner(updatedTasks);
+    commitTasks(updatedTasks);
     cancelEditing();
   };
 
   // タスク削除
-const removeTask = async (id: string) => {
-  const res = await fetch(`/api/tasks/${id}`, { method: "DELETE" });
-  if (!res.ok) return;
-
-  const updatedTasks = tasks.filter((task) => task.id !== id);
-  setTasks(updatedTasks);
-  updateWarningBanner(updatedTasks);
+const removeTask = (id: string) => {
+  const updatedTasks = tasks
+    .filter((task) => task.id !== id)
+    .map((task, index) => ({ ...task, sortOrder: index }));
+  commitTasks(updatedTasks);
 };
 
   // 完了チェック切り替え
-const toggleDone = async (id: string) => {
-  const target = tasks.find((task) => task.id === id);
-  if (!target) return;
-
-  const res = await fetch(`/api/tasks/${id}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ done: !target.done }),
-  });
-  if (!res.ok) return;
-
-  const json = (await res.json()) as { task: Task };
+const toggleDone = (id: string) => {
   const updatedTasks = tasks.map((task) =>
-    task.id === id ? json.task : task
+    task.id === id ? { ...task, done: !task.done } : task
   );
-  setTasks(updatedTasks);
-  updateWarningBanner(updatedTasks);
+  commitTasks(updatedTasks);
 };
+
+  const canMoveWithinProject = (
+    taskId: string,
+    projectName: string,
+    direction: "up" | "down"
+  ) => {
+    const orderedTasks = sortByOrder(tasks);
+    const projectTasks = orderedTasks.filter((task) => (task.project || "未分類") === projectName);
+    const index = projectTasks.findIndex((task) => task.id === taskId);
+    if (index < 0) return false;
+    if (direction === "up") return index > 0;
+    return index < projectTasks.length - 1;
+  };
+
+  const moveTaskWithinProject = (taskId: string, projectName: string, direction: "up" | "down") => {
+    const orderedTasks = sortByOrder(tasks);
+    const projectIndexes = orderedTasks
+      .map((task, index) => ({ task, index }))
+      .filter(({ task }) => (task.project || "未分類") === projectName);
+
+    const currentProjectIndex = projectIndexes.findIndex(({ task }) => task.id === taskId);
+    if (currentProjectIndex < 0) return;
+
+    const targetProjectIndex = direction === "up" ? currentProjectIndex - 1 : currentProjectIndex + 1;
+    if (targetProjectIndex < 0 || targetProjectIndex >= projectIndexes.length) return;
+
+    const sourceIndex = projectIndexes[currentProjectIndex].index;
+    const targetIndex = projectIndexes[targetProjectIndex].index;
+
+    const nextOrderedTasks = [...orderedTasks];
+    [nextOrderedTasks[sourceIndex], nextOrderedTasks[targetIndex]] = [
+      nextOrderedTasks[targetIndex],
+      nextOrderedTasks[sourceIndex],
+    ];
+
+    const resequenced = nextOrderedTasks.map((task, index) => ({ ...task, sortOrder: index }));
+    commitTasks(resequenced);
+  };
+
+  const handleProjectDragEnd = (projectName: string, event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const orderedTasks = sortByOrder(tasks);
+    const projectTasks = orderedTasks.filter(
+      (task) => (task.project || "未分類") === projectName
+    );
+
+    const oldIndex = projectTasks.findIndex((task) => task.id === String(active.id));
+    const newIndex = projectTasks.findIndex((task) => task.id === String(over.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const movedProjectTasks = arrayMove(projectTasks, oldIndex, newIndex);
+    let cursor = 0;
+    const merged = orderedTasks.map((task) => {
+      if ((task.project || "未分類") !== projectName) return task;
+      const nextTask = movedProjectTasks[cursor];
+      cursor += 1;
+      return nextTask;
+    });
+
+    const resequenced = merged.map((task, index) => ({ ...task, sortOrder: index }));
+    commitTasks(resequenced);
+  };
 
   // 🔹期限フォーマットを日本語に変換
   const formatDate = (dateString: string) => {
@@ -339,14 +511,7 @@ const toggleDone = async (id: string) => {
     return "text-gray-700"; // それ以降
   };
 
-  // 🔻期限切れタスクを下に移動（ソート）
-  const sortedTasks = [...tasks].sort((a, b) => {
-    const dateA =
-      a.deadline === "未設定" ? Infinity : new Date(a.deadline).getTime();
-    const dateB =
-      b.deadline === "未設定" ? Infinity : new Date(b.deadline).getTime();
-    return dateA - dateB;
-  });
+  const sortedTasks = sortByOrder(tasks);
 
   const filteredTasks = sortedTasks.filter((task) => {
     const projectMatch = selectedProject === "all" || task.project === selectedProject;
@@ -355,10 +520,13 @@ const toggleDone = async (id: string) => {
       (statusFilter === "active" && !task.done) ||
       (statusFilter === "done" && task.done);
     const tagMatch = selectedTag === "all" || task.tags.includes(selectedTag);
-    const deadlineMatch =
-      deadlineRiskFilter === "all" ||
-      (!task.done && getDeadlineBucket(task) === deadlineRiskFilter);
-    return projectMatch && statusMatch && tagMatch && deadlineMatch;
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    const searchMatch =
+      normalizedQuery.length === 0 ||
+      task.text.toLowerCase().includes(normalizedQuery) ||
+      task.project.toLowerCase().includes(normalizedQuery) ||
+      task.tags.some((tag) => tag.toLowerCase().includes(normalizedQuery));
+    return projectMatch && statusMatch && tagMatch && searchMatch;
   });
 
   const groupedTasks = filteredTasks.reduce<Record<string, Task[]>>((groups, task) => {
@@ -412,77 +580,18 @@ const toggleDone = async (id: string) => {
     rate: stats.total === 0 ? 0 : Math.round((stats.completed / stats.total) * 100),
   }));
 
-  const activeFilterChips: Array<{
-    key: string;
-    label: string;
-    onClear: () => void;
-  }> = [
-    ...(selectedProject !== "all"
-      ? [{ key: "project", label: `案件: ${selectedProject}`, onClear: () => setSelectedProject("all") }]
-      : []),
-    ...(statusFilter !== "all"
-      ? [{ key: "status", label: `状態: ${statusLabelMap[statusFilter]}`, onClear: () => setStatusFilter("all") }]
-      : []),
-    ...(selectedTag !== "all"
-      ? [{ key: "tag", label: `タグ: #${selectedTag}`, onClear: () => setSelectedTag("all") }]
-      : []),
-    ...(deadlineRiskFilter !== "all"
-      ? [{ key: "risk", label: `期限: ${deadlineRiskLabelMap[deadlineRiskFilter]}`, onClear: () => setDeadlineRiskFilter("all") }]
-      : []),
-  ];
-
-  const tasksWithoutDeadline = tasks.filter((task) => !task.done && task.deadline === "未設定").length;
-  const unclassifiedActiveTasks = tasks.filter(
-    (task) => !task.done && (task.project || "未分類") === "未分類"
-  ).length;
-
-  const nextActionCandidates = [
-    {
-      id: "overdue",
-      title: "期限切れタスクを処理",
-      detail: `${deadlineRisk.overdue}件の期限切れがあります。先に対応して遅延を止めましょう。`,
-      cta: "期限切れだけ表示",
-      show: deadlineRisk.overdue > 0,
-      onClick: () => handleDeadlineRiskClick("overdue"),
-    },
-    {
-      id: "today",
-      title: "今日中タスクを優先",
-      detail: `${deadlineRisk.today}件が今日期限です。今日分を先に片付けるのが安全です。`,
-      cta: "今日期限を表示",
-      show: deadlineRisk.today > 0,
-      onClick: () => handleDeadlineRiskClick("today"),
-    },
-    {
-      id: "tomorrow",
-      title: "明日期限を前倒し",
-      detail: `${deadlineRisk.tomorrow}件が前日ステータスです。前倒しで余裕を作れます。`,
-      cta: "前日タスクを表示",
-      show: deadlineRisk.tomorrow > 0,
-      onClick: () => handleDeadlineRiskClick("tomorrow"),
-    },
-    {
-      id: "noDeadline",
-      title: "未設定期限を整理",
-      detail: `${tasksWithoutDeadline}件が期限未設定です。期限を入れると優先順位が明確になります。`,
-      cta: "未完了を表示",
-      show: tasksWithoutDeadline > 0,
-      onClick: () => setStatusFilter("active"),
-    },
-    {
-      id: "unclassified",
-      title: "未分類案件を整理",
-      detail: `${unclassifiedActiveTasks}件が未分類です。案件名をつけると進捗管理しやすくなります。`,
-      cta: "未分類を表示",
-      show: unclassifiedActiveTasks > 0,
-      onClick: () => setSelectedProject("未分類"),
-    },
-  ];
-
-  const nextActions = nextActionCandidates.filter((item) => item.show).slice(0, 3);
-
   return (
     <>
+      <div className="w-full flex justify-end mb-4">
+        <button
+          type="button"
+          onClick={logout}
+          className="inline-flex h-9 min-w-[6.5rem] items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-4 text-sm font-semibold text-blue-700 hover:bg-blue-100 whitespace-nowrap"
+        >
+          ログアウト
+        </button>
+      </div>
+
       {/* 警告バナー */}
       {warningBanner.show && warningBanner.tasks.length > 0 && (
         <div className="mb-6 bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg shadow-md">
@@ -533,36 +642,18 @@ const toggleDone = async (id: string) => {
 
       <section className="mx-auto w-full max-w-5xl mb-8">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
-          <button
-            type="button"
-            onClick={() => handleStatusCardClick("all")}
-            className={`rounded-2xl bg-white border p-4 shadow-sm text-left transition ${
-              statusFilter === "all" ? "border-blue-400 ring-2 ring-blue-200" : "border-blue-100 hover:border-blue-300"
-            }`}
-          >
+          <div className="rounded-2xl bg-white border border-blue-100 p-4 shadow-sm">
             <p className="text-sm text-gray-500">総タスク</p>
             <p className="text-3xl font-bold text-blue-700 mt-1">{totalTasks}</p>
-          </button>
-          <button
-            type="button"
-            onClick={() => handleStatusCardClick("active")}
-            className={`rounded-2xl bg-white border p-4 shadow-sm text-left transition ${
-              statusFilter === "active" ? "border-blue-400 ring-2 ring-blue-200" : "border-blue-100 hover:border-blue-300"
-            }`}
-          >
+          </div>
+          <div className="rounded-2xl bg-white border border-blue-100 p-4 shadow-sm">
             <p className="text-sm text-gray-500">未完了</p>
             <p className="text-3xl font-bold text-blue-700 mt-1">{activeTasks}</p>
-          </button>
-          <button
-            type="button"
-            onClick={() => handleStatusCardClick("done")}
-            className={`rounded-2xl bg-white border p-4 shadow-sm text-left transition ${
-              statusFilter === "done" ? "border-blue-400 ring-2 ring-blue-200" : "border-blue-100 hover:border-blue-300"
-            }`}
-          >
+          </div>
+          <div className="rounded-2xl bg-white border border-blue-100 p-4 shadow-sm">
             <p className="text-sm text-gray-500">完了</p>
             <p className="text-3xl font-bold text-blue-700 mt-1">{completedTasks}</p>
-          </button>
+          </div>
           <div className="rounded-2xl bg-white border border-blue-100 p-4 shadow-sm">
             <p className="text-sm text-gray-500">完了率</p>
             <p className="text-3xl font-bold text-blue-700 mt-1">{completionRate}%</p>
@@ -576,28 +667,21 @@ const toggleDone = async (id: string) => {
               <p className="text-sm text-gray-500">案件データがまだありません。</p>
             ) : (
               <div className="space-y-4">
-                {projectProgress.map((project) => (
-                  <button
-                    key={project.name}
-                    type="button"
-                    onClick={() => handleProjectProgressClick(project.name)}
-                    className={`w-full text-left rounded-xl border p-2 transition ${
-                      selectedProject === project.name ? "border-blue-300 bg-blue-50" : "border-transparent hover:border-blue-200"
-                    }`}
-                  >
+                {projectProgress.map((item) => (
+                  <div key={item.name}>
                     <div className="flex items-center justify-between text-sm mb-1">
-                      <span className="font-medium text-gray-700">{project.name}</span>
+                      <span className="font-medium text-gray-700">{item.name}</span>
                       <span className="text-gray-500">
-                        {project.completed}/{project.total} ({project.rate}%)
+                        {item.completed}/{item.total} ({item.rate}%)
                       </span>
                     </div>
                     <div className="h-2 rounded-full bg-blue-100 overflow-hidden">
                       <div
                         className="h-full rounded-full bg-blue-500 transition-all"
-                        style={{ width: `${project.rate}%` }}
+                        style={{ width: `${item.rate}%` }}
                       />
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -606,54 +690,22 @@ const toggleDone = async (id: string) => {
           <div className="rounded-2xl bg-white border border-blue-100 p-5 shadow-sm">
             <h2 className="text-base font-semibold text-blue-700 mb-4">期限リスク</h2>
             <div className="grid gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => handleDeadlineRiskClick("overdue")}
-                className={`rounded-xl border p-3 text-left transition ${
-                  statusFilter === "active" && deadlineRiskFilter === "overdue"
-                    ? "bg-red-100 border-red-300 ring-2 ring-red-200"
-                    : "bg-red-50 border-red-100 hover:border-red-200"
-                }`}
-              >
+              <div className="rounded-xl bg-red-50 border border-red-100 p-3">
                 <p className="text-xs text-red-500">期限切れ</p>
                 <p className="text-2xl font-bold text-red-600 mt-1">{deadlineRisk.overdue}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDeadlineRiskClick("today")}
-                className={`rounded-xl border p-3 text-left transition ${
-                  statusFilter === "active" && deadlineRiskFilter === "today"
-                    ? "bg-red-100 border-red-300 ring-2 ring-red-200"
-                    : "bg-red-50 border-red-100 hover:border-red-200"
-                }`}
-              >
+              </div>
+              <div className="rounded-xl bg-red-50 border border-red-100 p-3">
                 <p className="text-xs text-red-500">今日期限</p>
                 <p className="text-2xl font-bold text-red-600 mt-1">{deadlineRisk.today}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDeadlineRiskClick("tomorrow")}
-                className={`rounded-xl border p-3 text-left transition ${
-                  statusFilter === "active" && deadlineRiskFilter === "tomorrow"
-                    ? "bg-orange-100 border-orange-300 ring-2 ring-orange-200"
-                    : "bg-orange-50 border-orange-100 hover:border-orange-200"
-                }`}
-              >
+              </div>
+              <div className="rounded-xl bg-orange-50 border border-orange-100 p-3">
                 <p className="text-xs text-orange-500">前日</p>
                 <p className="text-2xl font-bold text-orange-600 mt-1">{deadlineRisk.tomorrow}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDeadlineRiskClick("dayAfterTomorrow")}
-                className={`rounded-xl border p-3 text-left transition ${
-                  statusFilter === "active" && deadlineRiskFilter === "dayAfterTomorrow"
-                    ? "bg-orange-100 border-orange-300 ring-2 ring-orange-200"
-                    : "bg-orange-50 border-orange-100 hover:border-orange-200"
-                }`}
-              >
+              </div>
+              <div className="rounded-xl bg-orange-50 border border-orange-100 p-3">
                 <p className="text-xs text-orange-500">前々日</p>
                 <p className="text-2xl font-bold text-orange-600 mt-1">{deadlineRisk.dayAfterTomorrow}</p>
-              </button>
+              </div>
             </div>
           </div>
         </div>
@@ -729,6 +781,28 @@ const toggleDone = async (id: string) => {
 
       <div className="mb-6 space-y-4">
         <div className="grid grid-cols-[6rem_1fr] items-center gap-3">
+          <span className="text-sm text-gray-600">検索:</span>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="タスク名・案件名・タグで検索"
+              className="h-9 w-full border rounded-full px-4 text-sm shadow-sm"
+            />
+            {searchQuery.trim().length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="h-9 min-w-[4.5rem] px-3 rounded-full border bg-white text-gray-700 hover:bg-gray-100 text-sm whitespace-nowrap"
+              >
+                クリア
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-[6rem_1fr] items-center gap-3">
           <span className="text-sm text-gray-600">表示案件:</span>
           <div className="flex flex-wrap gap-3 items-center">
             <button
@@ -740,9 +814,7 @@ const toggleDone = async (id: string) => {
             {[...new Set(tasks.map((task) => task.project || "未分類"))].map((projectName) => (
               <button
                 key={projectName}
-                onClick={() =>
-                  setSelectedProject((prev) => (prev === projectName ? "all" : projectName))
-                }
+                onClick={() => setSelectedProject(projectName)}
                 className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${selectedProject === projectName ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
               >
                 {projectName}
@@ -757,13 +829,7 @@ const toggleDone = async (id: string) => {
             {(["all", "active", "done"] as const).map((status) => (
               <button
                 key={status}
-                onClick={() => {
-                  const toggledStatus = statusFilter === status ? "all" : status;
-                  setStatusFilter(toggledStatus);
-                  if (toggledStatus !== "active") {
-                    setDeadlineRiskFilter("all");
-                  }
-                }}
+                onClick={() => setStatusFilter(status)}
                 className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${statusFilter === status ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
               >
                 {status === "all" ? "すべて" : status === "active" ? "未完了" : "完了"}
@@ -784,7 +850,7 @@ const toggleDone = async (id: string) => {
             {[...new Set(tasks.flatMap((task) => task.tags))].map((tagName) => (
               <button
                 key={tagName}
-                onClick={() => setSelectedTag((prev) => (prev === tagName ? "all" : tagName))}
+                onClick={() => setSelectedTag(tagName)}
                 className={`h-9 px-4 rounded-full border flex items-center justify-center whitespace-nowrap ${selectedTag === tagName ? "bg-blue-500 text-white" : "bg-white text-gray-700"}`}
               >
                 {tagName}
@@ -792,68 +858,16 @@ const toggleDone = async (id: string) => {
             ))}
           </div>
         </div>
-        <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-blue-800">フィルタ状態</h3>
-            <div className="flex items-center gap-3">
-              <p className="text-sm text-blue-700">
-                表示中: {filteredTasks.length} / {tasks.length}件
-              </p>
-              {activeFilterChips.length > 0 && (
-                <button
-                  type="button"
-                  onClick={clearFilters}
-                  className="rounded-full border border-blue-200 bg-white px-3 py-1 text-xs text-blue-800 hover:bg-blue-100"
-                >
-                  フィルタを全解除
-                </button>
-              )}
-            </div>
-          </div>
-
-          {activeFilterChips.length === 0 ? (
-            <p className="mt-3 text-sm text-gray-600">現在はフィルタ未適用です。</p>
-          ) : (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {activeFilterChips.map((chip) => (
-                <button
-                  key={chip.key}
-                  type="button"
-                  onClick={chip.onClear}
-                  className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-white px-3 py-1 text-sm text-blue-800 hover:bg-blue-100"
-                >
-                  <span>{chip.label}</span>
-                  <span className="text-blue-500">×</span>
-                </button>
-              ))}
-            </div>
-          )}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={clearFilters}
+            className="h-9 px-4 rounded-full border bg-white text-gray-700 hover:bg-gray-100"
+          >
+            フィルタ解除
+          </button>
         </div>
-
-        <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-4">
-          <h3 className="text-sm font-semibold text-emerald-800">次にやるべきタスク</h3>
-          {nextActions.length === 0 ? (
-            <p className="mt-3 text-sm text-emerald-700">
-              優先アクションはありません。未完了タスクの追加や案件整理を進められます。
-            </p>
-          ) : (
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
-              {nextActions.map((action) => (
-                <div key={action.id} className="rounded-lg border border-emerald-200 bg-white p-3">
-                  <p className="text-sm font-semibold text-gray-800">{action.title}</p>
-                  <p className="mt-1 text-xs text-gray-600">{action.detail}</p>
-                  <button
-                    type="button"
-                    onClick={action.onClick}
-                    className="mt-3 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600"
-                  >
-                    {action.cta}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <p className="text-right text-sm text-gray-600">表示中: {filteredTasks.length} / {tasks.length}件</p>
       </div>
 
       </div>
@@ -935,71 +949,41 @@ const toggleDone = async (id: string) => {
           <div key={projectName} className="mb-8 mx-auto w-full max-w-4xl">
             <button
               type="button"
-              onClick={() =>
-                setSelectedProject((prev) => (prev === projectName ? "all" : projectName))
-              }
+              onClick={() => setSelectedProject(projectName)}
               className="mb-4 w-full text-left px-4 py-2 rounded-xl bg-blue-100 text-blue-800 font-semibold shadow-sm hover:bg-blue-200"
             >
               {projectName} ({projectTasks.length}件)
             </button>
-            <ul className="bg-gradient-to-br from-white to-blue-50 shadow-lg rounded-xl p-6 w-full">
-              {projectTasks.map((task) => (
-                <li
-                  key={task.id}
-                  className={`border-b py-3 flex flex-col gap-1 cursor-pointer rounded-lg p-2 ${
-                    task.done ? "bg-gray-100" : "bg-white"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      checked={task.done}
-                      onChange={() => toggleDone(task.id)}
-                      className="cursor-pointer"
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={(event) => handleProjectDragEnd(projectName, event)}
+            >
+              <SortableContext
+                items={projectTasks.map((task) => task.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <ul className="bg-gradient-to-br from-white to-blue-50 shadow-lg rounded-xl p-6 w-full">
+                  {projectTasks.map((task) => (
+                    <SortableTaskRow
+                      key={task.id}
+                      task={task}
+                      projectName={projectName}
+                      onToggleDone={toggleDone}
+                      onStartEditing={startEditingTask}
+                      onMoveUp={(id, name) => moveTaskWithinProject(id, name, "up")}
+                      onMoveDown={(id, name) => moveTaskWithinProject(id, name, "down")}
+                      onRemove={removeTask}
+                      canMoveUp={canMoveWithinProject(task.id, projectName, "up")}
+                      canMoveDown={canMoveWithinProject(task.id, projectName, "down")}
+                      onTagClick={setSelectedTag}
+                      formatDate={formatDate}
+                      getDeadlineColor={getDeadlineColor}
                     />
-                    <span
-                      className={`font-medium tracking-wide flex-1 ${
-                        task.done ? "line-through text-gray-400" : "text-gray-700"
-                      }`}
-                    >
-                      {task.text}
-                    </span>
-                    <button
-                      onClick={() => startEditingTask(task)}
-                      className="text-blue-500 hover:text-blue-600 font-bold"
-                    >
-                      編集
-                    </button>
-                    <button
-                      onClick={() => removeTask(task.id)}
-                      className="text-red-500 hover:text-red-600 font-bold"
-                    >
-                      ×
-                    </button>
-                  </div>
-
-                  <div className="ml-7 flex flex-wrap gap-2 items-center text-sm text-gray-600">
-                    <span className={getDeadlineColor(task.deadline)}>
-                      期限：{formatDate(task.deadline)}
-                    </span>
-                    {task.tags.length > 0 && (
-                      <span className="flex flex-wrap gap-2">
-                        {task.tags.map((tag) => (
-                          <button
-                            key={tag}
-                            type="button"
-                            onClick={() => setSelectedTag((prev) => (prev === tag ? "all" : tag))}
-                            className="inline-flex items-center bg-gray-200 text-gray-700 px-2 py-1 rounded-full text-xs hover:bg-gray-300"
-                          >
-                            #{tag}
-                          </button>
-                        ))}
-                      </span>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
+                  ))}
+                </ul>
+              </SortableContext>
+            </DndContext>
           </div>
         ))
       )}

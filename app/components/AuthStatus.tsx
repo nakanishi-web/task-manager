@@ -1,59 +1,86 @@
-"use client"
-import Link from "next/link"
-import { useEffect, useState } from "react"
+"use client";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
 type SessionUser = {
-  id: string
-  email: string
-  name?: string | null
-} | null
+  email: string;
+} | null;
+
+const SESSION_KEY = "taskflow_session_email";
+const COOKIE_KEY = "taskflow_session";
+
+const getSessionEmail = () => {
+  try {
+    return localStorage.getItem(SESSION_KEY);
+  } catch {
+    return null;
+  }
+};
 
 export default function AuthStatus() {
-  const [user, setUser] = useState<SessionUser>(null)
-  const [loading, setLoading] = useState(true)
+  const [user, setUser] = useState<SessionUser>(null);
+
+  const syncSession = () => {
+    const email = getSessionEmail();
+    const hasCookie = document.cookie
+      .split(";")
+      .some((item) => item.trim().startsWith(`${COOKIE_KEY}=`));
+
+    if (email || hasCookie) {
+      setUser({ email: email || "ログイン中" });
+      return;
+    }
+
+    setUser(null);
+  };
 
   useEffect(() => {
-    fetch('/api/auth/session')
-      .then((res) => res.json())
-      .then((data) => {
-        setUser(data.user)
-        setLoading(false)
-      })
-      .catch(() => {
-        setUser(null)
-        setLoading(false)
-      })
-  }, [])
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    syncSession();
 
-  const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' })
-    window.location.href = '/auth'
-  }
+    const onFocus = () => syncSession();
+    const onStorage = () => syncSession();
 
-  if (loading) {
-    return <span className="text-gray-600">読み込み中...</span>
-  }
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("storage", onStorage);
 
-  if (user) {
-    return (
-      <div className="flex items-center gap-3">
-        <span className="text-sm text-gray-600">こんにちは、{user.name || user.email}</span>
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+
+  const logout = () => {
+    try {
+      localStorage.removeItem(SESSION_KEY);
+      document.cookie = `${COOKIE_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
+      document.cookie = `${COOKIE_KEY}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax`;
+    } catch {
+      // Keep UI usable even if storage is unavailable.
+    }
+    setUser(null);
+    // replace() avoids leaving an authenticated page in browser history.
+    window.location.replace("/auth");
+  };
+
+  return (
+    <div className="flex items-center">
+      {user ? (
         <button
-          onClick={handleLogout}
-          className="h-9 px-3 rounded-full border bg-white text-gray-700 hover:bg-gray-100"
+          type="button"
+          onClick={logout}
+          className="inline-flex h-9 min-w-[6.5rem] items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-4 text-sm font-semibold text-blue-700 hover:bg-blue-100 whitespace-nowrap"
         >
           ログアウト
         </button>
-      </div>
-    )
-  }
-
-  return (
-    <Link
-      href="/auth"
-      className="ml-4 h-9 px-3 rounded-full border bg-white text-gray-700 hover:bg-gray-100"
-    >
-      サインイン
-    </Link>
-  )
+      ) : (
+        <Link
+          href="/auth"
+          className="inline-flex h-9 min-w-[6.5rem] items-center justify-center rounded-full border border-blue-200 bg-white px-4 text-sm font-semibold text-blue-700 hover:bg-blue-50 whitespace-nowrap"
+        >
+          サインイン
+        </Link>
+      )}
+    </div>
+  );
 }

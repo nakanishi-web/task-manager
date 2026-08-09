@@ -24,3 +24,15 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Keep default control borders subtle to match the original light UI tone. */
+*,
+::before,
+::after {
+  border-color: #d6e3f5;
+}
+
+/* Tailwind's border utility can inherit darker colors; force a light default. */
+.border {
+  border-color: #d6e3f5;
+}
