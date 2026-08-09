@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
+import AuthStatus from "./components/AuthStatus";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -42,7 +43,7 @@ export default function RootLayout({
           </div>
 
           {/* ナビゲーション */}
-          <nav className="flex gap-6 text-gray-600 font-medium tracking-wide">
+          <nav className="flex gap-6 text-gray-600 font-medium tracking-wide items-center">
             <Link href="/" className="hover:text-blue-600 transition">
               ホーム
             </Link>
@@ -52,6 +53,9 @@ export default function RootLayout({
             <Link href="/contact" className="hover:text-blue-600 transition">
               お問い合わせ
             </Link>
+            <div className="ml-4">
+              <AuthStatus />
+            </div>
           </nav>
         </header>
 
