@@ -174,6 +174,20 @@ export default function Home() {
     sortOrder?: unknown
   }
 
+  type TaskApiResponse = {
+    tasks?: RawTask[]
+  }
+
+  type CreateTaskApiResponse = {
+    task?: RawTask
+  }
+
+  type ImportTasksApiResponse = {
+    ok?: boolean
+    imported?: number
+    skipped?: number
+  }
+
   const SESSION_KEY = "taskflow_session_email";
   const COOKIE_KEY = "taskflow_session";
 
@@ -215,6 +229,112 @@ export default function Home() {
   const updateWarningBanner = (taskList: Task[]) => {
     const upcomingTasks = checkUpcomingDeadlines(taskList);
     setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
+  };
+
+  const normalizeTask = (item: RawTask, index: number) => {
+    const hasSortOrder = typeof item.sortOrder === "number";
+
+    return {
+      id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
+      text: typeof item.text === "string" ? item.text : "",
+      done: typeof item.done === "boolean" ? item.done : false,
+      deadline: typeof item.deadline === "string" && item.deadline ? item.deadline : "未設定",
+      project: typeof item.project === "string" && item.project ? item.project : "未分類",
+      tags: Array.isArray(item.tags)
+        ? item.tags.filter((tag): tag is string => typeof tag === "string")
+        : [],
+      sortOrder: hasSortOrder ? (item.sortOrder as number) : index,
+    } satisfies Task;
+  };
+
+  const readLocalTasks = () => {
+    const saved = localStorage.getItem("tasks");
+    if (!saved) return null;
+
+    const parsed = JSON.parse(saved) as unknown;
+    if (!Array.isArray(parsed)) {
+      localStorage.removeItem("tasks");
+      return null;
+    }
+
+    let requiresResave = false;
+    const loadedTasks = parsed.map((item, index) => {
+      const task = item as RawTask;
+      if (typeof task.sortOrder !== "number") requiresResave = true;
+      return normalizeTask(task, index);
+    });
+
+    const orderedTasks = sortByOrder(loadedTasks);
+    if (requiresResave) {
+      localStorage.setItem("tasks", JSON.stringify(orderedTasks));
+    }
+
+    return orderedTasks;
+  };
+
+  const loadTasksFromApi = async (sessionEmail: string) => {
+    const response = await fetch("/api/tasks", {
+      method: "GET",
+      headers: {
+        "x-session-email": sessionEmail,
+      },
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error("failed to fetch tasks");
+    }
+
+    const data = (await response.json()) as TaskApiResponse;
+    const apiTasks = Array.isArray(data.tasks) ? data.tasks : [];
+    return sortByOrder(apiTasks.map((item, index) => normalizeTask(item as RawTask, index)));
+  };
+
+  const createTaskViaApi = async (sessionEmail: string, task: Task) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-session-email": sessionEmail,
+      },
+      body: JSON.stringify(task),
+    });
+
+    if (!response.ok) {
+      throw new Error("failed to create task");
+    }
+
+    const data = (await response.json()) as CreateTaskApiResponse;
+    if (!data.task) {
+      throw new Error("task not returned");
+    }
+
+    return normalizeTask(data.task as RawTask, task.sortOrder);
+  };
+
+  const importLocalTasksToApi = async (sessionEmail: string, taskList: Task[]) => {
+    const response = await fetch("/api/tasks/import", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-session-email": sessionEmail,
+      },
+      body: JSON.stringify({
+        tasks: taskList.map((task) => ({
+          text: task.text,
+          done: task.done,
+          deadline: task.deadline,
+          project: task.project,
+          tags: task.tags,
+        })),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error("failed to import local tasks");
+    }
+
+    return (await response.json()) as ImportTasksApiResponse;
   };
 
   const commitTasks = (nextTasks: Task[]) => {
@@ -270,7 +390,7 @@ export default function Home() {
     return upcomingTasks;
   };
 
-  // 初回読み込み：ローカルストレージからタスクを復元
+  // 初回読み込み：API優先で復元し、失敗時はローカルを使う
   useEffect(() => {
     const sessionEmail = localStorage.getItem(SESSION_KEY);
     if (!sessionEmail) {
@@ -278,43 +398,33 @@ export default function Home() {
       return;
     }
 
-    const saved = localStorage.getItem("tasks");
-    if (saved) {
-      const parsed = JSON.parse(saved) as unknown;
-      if (Array.isArray(parsed)) {
-        let requiresResave = false;
-        const loadedTasks = parsed.map((item, index) => {
-          const task = item as RawTask;
-          const hasSortOrder = typeof task.sortOrder === "number";
-          if (!hasSortOrder) requiresResave = true;
+    const hydrate = async () => {
+      const localTasks = readLocalTasks() ?? [];
 
-          return {
-            id: typeof task.id === "string" ? task.id : crypto.randomUUID(),
-            text: typeof task.text === "string" ? task.text : "",
-            done: typeof task.done === "boolean" ? task.done : false,
-            deadline: typeof task.deadline === "string" && task.deadline ? task.deadline : "未設定",
-            project: typeof task.project === "string" && task.project ? task.project : "未分類",
-            tags: Array.isArray(task.tags)
-              ? task.tags.filter((tag): tag is string => typeof tag === "string")
-              : [],
-            sortOrder: hasSortOrder ? (task.sortOrder as number) : index,
-          } satisfies Task;
-        });
+      try {
+        let apiTasks = await loadTasksFromApi(sessionEmail);
 
-        const orderedTasks = sortByOrder(loadedTasks);
-        const upcomingTasks = checkUpcomingDeadlines(orderedTasks);
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setTasks(orderedTasks);
-        setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
-
-        if (requiresResave) {
-          localStorage.setItem("tasks", JSON.stringify(orderedTasks));
+        // If DB is empty but local has legacy data, migrate once before rendering.
+        if (apiTasks.length === 0 && localTasks.length > 0) {
+          await importLocalTasksToApi(sessionEmail, localTasks);
+          apiTasks = await loadTasksFromApi(sessionEmail);
         }
-      } else {
-        localStorage.removeItem("tasks");
+
+        const mergedTasks = apiTasks.length > 0 ? apiTasks : localTasks;
+        const upcomingTasks = checkUpcomingDeadlines(mergedTasks);
+        setTasks(mergedTasks);
+        setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
+        localStorage.setItem("tasks", JSON.stringify(mergedTasks));
+      } catch {
+        const upcomingTasks = checkUpcomingDeadlines(localTasks);
+        setTasks(localTasks);
+        setWarningBanner({ show: upcomingTasks.length > 0, tasks: upcomingTasks });
+      } finally {
+        setIsHydrated(true);
       }
-    }
-    setIsHydrated(true);
+    };
+
+    void hydrate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -325,13 +435,13 @@ export default function Home() {
   }, [tasks, isHydrated]);
 
   // タスク追加
-  const addTask = () => {
+  const addTask = async () => {
     if (newTask.trim() === "") return;
 
     const nextSortOrder =
       tasks.length === 0 ? 0 : Math.max(...tasks.map((task) => task.sortOrder)) + 1;
 
-    const newItem = {
+    const newItem: Task = {
       id: crypto.randomUUID(),
       text: newTask,
       done: false,
@@ -341,8 +451,18 @@ export default function Home() {
       sortOrder: nextSortOrder,
     };
 
-    const updatedTasks = [...tasks, newItem];
-    commitTasks(updatedTasks);
+    let taskToAdd = newItem;
+    const sessionEmail = localStorage.getItem(SESSION_KEY);
+    if (sessionEmail) {
+      try {
+        taskToAdd = await createTaskViaApi(sessionEmail, newItem);
+      } catch {
+        // Fallback to local-only add if API is temporarily unavailable.
+      }
+    }
+
+    const updatedTasks = [...tasks, taskToAdd];
+    commitTasks(sortByOrder(updatedTasks));
 
     // 入力欄リセット
     setNewTask("");
@@ -351,16 +471,16 @@ export default function Home() {
     setNewTags("");
 
     // 🔔 追加直後に期限通知を出す（確実に通知が出る）
-    if (newItem.deadline !== "未設定") {
+    if (taskToAdd.deadline !== "未設定") {
       const today = new Date();
-      const taskDate = new Date(newItem.deadline);
+      const taskDate = new Date(taskToAdd.deadline);
       const diffDays = Math.floor(
         (taskDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
       );
 
       if (diffDays === 1 && Notification.permission === "granted") {
         new Notification("期限が近いタスク", {
-          body: `${newItem.text} の期限は明日です！`,
+          body: `${taskToAdd.text} の期限は明日です！`,
         });
       }
     }

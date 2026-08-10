@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { getSessionUserId } from '@/lib/session'
+import { TaskStatus } from '@prisma/client'
 
 type UpdateTaskBody = {
   text?: string
@@ -12,25 +12,69 @@ type UpdateTaskBody = {
 
 const mapTask = (task: {
   id: string
-  text: string
-  done: boolean
-  deadline: string
+  title: string
+  status: TaskStatus
+  dueDate: Date | null
   project: string
-  tags: string
+  tagsJson: string
+  sortOrder: number
 }) => ({
   id: task.id,
-  text: task.text,
-  done: task.done,
-  deadline: task.deadline,
+  text: task.title,
+  done: task.status === TaskStatus.DONE,
+  deadline: task.dueDate ? task.dueDate.toISOString().slice(0, 10) : '未設定',
   project: task.project,
-  tags: task.tags ? task.tags.split(',').map((tag) => tag.trim()).filter(Boolean) : [],
+  tags: (() => {
+    try {
+      const parsed = JSON.parse(task.tagsJson) as unknown
+      return Array.isArray(parsed)
+        ? parsed.filter((tag): tag is string => typeof tag === 'string')
+        : []
+    } catch {
+      return []
+    }
+  })(),
+  sortOrder: task.sortOrder,
 })
 
+const SESSION_COOKIE = 'taskflow_session'
+
+const getSessionEmail = (request: Request) => {
+  const cookie = request.headers.get('cookie') || ''
+  const hasSessionCookie = cookie.split(';').some((item) => item.trim().startsWith(`${SESSION_COOKIE}=`))
+  if (!hasSessionCookie) return null
+
+  const email = request.headers.get('x-session-email')?.trim().toLowerCase()
+  if (!email) return null
+  return email
+}
+
+const getOrCreateUserId = async (email: string) => {
+  const existing = await prisma.user.findUnique({ where: { email } })
+  if (existing) return existing.id
+
+  try {
+    const created = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: 'local-auth-placeholder',
+      },
+    })
+    return created.id
+  } catch {
+    const created = await prisma.user.findUnique({ where: { email } })
+    if (!created) throw new Error('failed to create user')
+    return created.id
+  }
+}
+
 export async function PUT(request: Request, context: { params: Promise<{ id: string }> }) {
-  const userId = getSessionUserId(request.headers.get('cookie'))
-  if (!userId) {
+  const sessionEmail = getSessionEmail(request)
+  if (!sessionEmail) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
+
+  const userId = await getOrCreateUserId(sessionEmail)
 
   const { id } = await context.params
   const body = (await request.json()) as UpdateTaskBody
@@ -43,13 +87,19 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
   const task = await prisma.task.update({
     where: { id },
     data: {
-      text: body.text?.trim() || existing.text,
-      done: typeof body.done === 'boolean' ? body.done : existing.done,
-      deadline: body.deadline || existing.deadline,
+      title: body.text?.trim() || existing.title,
+      status: typeof body.done === 'boolean'
+        ? (body.done ? TaskStatus.DONE : TaskStatus.ACTIVE)
+        : existing.status,
+      dueDate: typeof body.deadline === 'string'
+        ? (body.deadline && body.deadline !== '未設定'
+            ? new Date(`${body.deadline}T00:00:00.000Z`)
+            : null)
+        : existing.dueDate,
       project: body.project?.trim() || existing.project,
-      tags: Array.isArray(body.tags)
-        ? body.tags.map((tag) => tag.trim()).filter(Boolean).join(',')
-        : existing.tags,
+      tagsJson: Array.isArray(body.tags)
+        ? JSON.stringify(body.tags.map((tag) => tag.trim()).filter(Boolean))
+        : existing.tagsJson,
     },
   })
 
@@ -57,10 +107,12 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
 }
 
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
-  const userId = getSessionUserId(request.headers.get('cookie'))
-  if (!userId) {
+  const sessionEmail = getSessionEmail(request)
+  if (!sessionEmail) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
+
+  const userId = await getOrCreateUserId(sessionEmail)
 
   const { id } = await context.params
   const existing = await prisma.task.findFirst({ where: { id, userId } })
