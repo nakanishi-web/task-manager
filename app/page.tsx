@@ -182,6 +182,10 @@ export default function Home() {
     task?: RawTask
   }
 
+  type UpdateTaskApiResponse = {
+    task?: RawTask
+  }
+
   type ImportTasksApiResponse = {
     ok?: boolean
     imported?: number
@@ -310,6 +314,51 @@ export default function Home() {
     }
 
     return normalizeTask(data.task as RawTask, task.sortOrder);
+  };
+
+  const updateTaskViaApi = async (
+    sessionEmail: string,
+    id: string,
+    payload: {
+      text?: string
+      done?: boolean
+      deadline?: string
+      project?: string
+      tags?: string[]
+    }
+  ) => {
+    const response = await fetch(`/api/tasks/${id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "x-session-email": sessionEmail,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      throw new Error("failed to update task");
+    }
+
+    const data = (await response.json()) as UpdateTaskApiResponse;
+    if (!data.task) {
+      throw new Error("task not returned");
+    }
+
+    return normalizeTask(data.task as RawTask, 0);
+  };
+
+  const deleteTaskViaApi = async (sessionEmail: string, id: string) => {
+    const response = await fetch(`/api/tasks/${id}`, {
+      method: "DELETE",
+      headers: {
+        "x-session-email": sessionEmail,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error("failed to delete task");
+    }
   };
 
   const importLocalTasksToApi = async (sessionEmail: string, taskList: Task[]) => {
@@ -509,17 +558,39 @@ export default function Home() {
     setEditingTags("");
   };
 
-  const saveTaskEdit = () => {
+  const saveTaskEdit = async () => {
     if (!editingTaskId) return;
+
+    const targetTask = tasks.find((task) => task.id === editingTaskId);
+    if (!targetTask) return;
+
+    const updatedPayload = {
+      text: editingTaskText.trim() || targetTask.text,
+      deadline: editingDeadline || "未設定",
+      project: editingProject.trim() || "未分類",
+      tags: parseTags(editingTags),
+    };
+
+    const sessionEmail = localStorage.getItem(SESSION_KEY);
+    if (sessionEmail) {
+      try {
+        const apiTask = await updateTaskViaApi(sessionEmail, editingTaskId, updatedPayload);
+        const updatedTasks = tasks.map((task) =>
+          task.id === editingTaskId ? { ...task, ...apiTask } : task
+        );
+        commitTasks(updatedTasks);
+        cancelEditing();
+        return;
+      } catch {
+        // Fallback to local update when API is unavailable.
+      }
+    }
 
     const updatedTasks = tasks.map((task) =>
       task.id === editingTaskId
         ? {
             ...task,
-            text: editingTaskText.trim() || task.text,
-            deadline: editingDeadline || "未設定",
-            project: editingProject.trim() || "未分類",
-            tags: parseTags(editingTags),
+            ...updatedPayload,
           }
         : task
     );
@@ -529,7 +600,16 @@ export default function Home() {
   };
 
   // タスク削除
-const removeTask = (id: string) => {
+const removeTask = async (id: string) => {
+  const sessionEmail = localStorage.getItem(SESSION_KEY);
+  if (sessionEmail) {
+    try {
+      await deleteTaskViaApi(sessionEmail, id);
+    } catch {
+      // Keep local fallback path.
+    }
+  }
+
   const updatedTasks = tasks
     .filter((task) => task.id !== id)
     .map((task, index) => ({ ...task, sortOrder: index }));
@@ -537,7 +617,26 @@ const removeTask = (id: string) => {
 };
 
   // 完了チェック切り替え
-const toggleDone = (id: string) => {
+const toggleDone = async (id: string) => {
+  const targetTask = tasks.find((task) => task.id === id);
+  if (!targetTask) return;
+
+  const sessionEmail = localStorage.getItem(SESSION_KEY);
+  if (sessionEmail) {
+    try {
+      const apiTask = await updateTaskViaApi(sessionEmail, id, {
+        done: !targetTask.done,
+      });
+      const updatedTasks = tasks.map((task) =>
+        task.id === id ? { ...task, ...apiTask } : task
+      );
+      commitTasks(updatedTasks);
+      return;
+    } catch {
+      // Keep local fallback path.
+    }
+  }
+
   const updatedTasks = tasks.map((task) =>
     task.id === id ? { ...task, done: !task.done } : task
   );
