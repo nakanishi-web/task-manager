@@ -11,6 +11,13 @@ type CreateTaskBody = {
   sortOrder?: number
 }
 
+type ReorderTaskBody = {
+  orders?: Array<{
+    id?: string
+    sortOrder?: number
+  }>
+}
+
 const mapTask = (task: {
   id: string
   title: string
@@ -128,4 +135,48 @@ export async function POST(request: Request) {
   })
 
   return NextResponse.json({ task: mapTask(task) }, { status: 201 })
+}
+
+export async function PATCH(request: Request) {
+  const sessionEmail = getSessionEmail(request)
+  if (!sessionEmail) {
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  }
+
+  const user = await getOrCreateUser(sessionEmail)
+  const body = (await request.json()) as ReorderTaskBody
+  const orders = Array.isArray(body.orders) ? body.orders : []
+
+  const validOrders = orders.filter(
+    (item): item is { id: string; sortOrder: number } =>
+      typeof item.id === 'string' && typeof item.sortOrder === 'number'
+  )
+
+  if (validOrders.length === 0) {
+    return NextResponse.json({ error: 'orders required' }, { status: 400 })
+  }
+
+  const ids = validOrders.map((item) => item.id)
+  const existingTasks = await prisma.task.findMany({
+    where: {
+      userId: user.id,
+      id: { in: ids },
+    },
+    select: { id: true },
+  })
+
+  if (existingTasks.length !== validOrders.length) {
+    return NextResponse.json({ error: 'invalid task ids' }, { status: 400 })
+  }
+
+  await prisma.$transaction(
+    validOrders.map((item) =>
+      prisma.task.update({
+        where: { id: item.id },
+        data: { sortOrder: item.sortOrder },
+      })
+    )
+  )
+
+  return NextResponse.json({ ok: true, updated: validOrders.length })
 }
