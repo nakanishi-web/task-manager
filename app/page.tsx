@@ -361,6 +361,26 @@ export default function Home() {
     }
   };
 
+  const saveSortOrderViaApi = async (sessionEmail: string, taskList: Task[]) => {
+    const response = await fetch("/api/tasks", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "x-session-email": sessionEmail,
+      },
+      body: JSON.stringify({
+        orders: taskList.map((task, index) => ({
+          id: task.id,
+          sortOrder: index,
+        })),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error("failed to save sort order");
+    }
+  };
+
   const importLocalTasksToApi = async (sessionEmail: string, taskList: Task[]) => {
     const response = await fetch("/api/tasks/import", {
       method: "POST",
@@ -613,6 +633,15 @@ const removeTask = async (id: string) => {
   const updatedTasks = tasks
     .filter((task) => task.id !== id)
     .map((task, index) => ({ ...task, sortOrder: index }));
+
+  if (sessionEmail) {
+    try {
+      await saveSortOrderViaApi(sessionEmail, updatedTasks);
+    } catch {
+      // Keep local fallback path.
+    }
+  }
+
   commitTasks(updatedTasks);
 };
 
@@ -656,7 +685,7 @@ const toggleDone = async (id: string) => {
     return index < projectTasks.length - 1;
   };
 
-  const moveTaskWithinProject = (taskId: string, projectName: string, direction: "up" | "down") => {
+  const moveTaskWithinProject = async (taskId: string, projectName: string, direction: "up" | "down") => {
     const orderedTasks = sortByOrder(tasks);
     const projectIndexes = orderedTasks
       .map((task, index) => ({ task, index }))
@@ -678,10 +707,20 @@ const toggleDone = async (id: string) => {
     ];
 
     const resequenced = nextOrderedTasks.map((task, index) => ({ ...task, sortOrder: index }));
+
+    const sessionEmail = localStorage.getItem(SESSION_KEY);
+    if (sessionEmail) {
+      try {
+        await saveSortOrderViaApi(sessionEmail, resequenced);
+      } catch {
+        // Keep local fallback path.
+      }
+    }
+
     commitTasks(resequenced);
   };
 
-  const handleProjectDragEnd = (projectName: string, event: DragEndEvent) => {
+  const handleProjectDragEnd = async (projectName: string, event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
 
@@ -704,6 +743,16 @@ const toggleDone = async (id: string) => {
     });
 
     const resequenced = merged.map((task, index) => ({ ...task, sortOrder: index }));
+
+    const sessionEmail = localStorage.getItem(SESSION_KEY);
+    if (sessionEmail) {
+      try {
+        await saveSortOrderViaApi(sessionEmail, resequenced);
+      } catch {
+        // Keep local fallback path.
+      }
+    }
+
     commitTasks(resequenced);
   };
 
